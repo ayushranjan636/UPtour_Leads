@@ -1,0 +1,170 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: uptour-postgres
+    environment:
+      POSTGRES_DB: uptour
+      POSTGRES_USER: uptour
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Creates the second database that OpenWA needs. Runs only on first init.
+      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uptour -d uptour"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - uptour-net
+
+  # Redis (BullMQ Queues)
+  redis:
+    image: redis:7-alpine
+    container_name: uptour-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - uptour-net
+
+  # OpenWA — WhatsApp API Gateway
+  # `openwa` is a symlink to ../OpenWA. Docker build contexts cannot traverse a
+  # symlink outside the project, so set OPENWA_CONTEXT to the real path.
+  openwa:
+    build:
+      context: ${OPENWA_CONTEXT:-./openwa}
+      dockerfile: Dockerfile
+    container_name: uptour-openwa
+    ports:
+      - "2785:2785"
+    environment:
+      # Defaults target the compose `postgres` service. For a standalone OpenWA run
+      # (e.g. Postgres already running natively on the host, so the compose one would
+      # collide on 5432) set OPENWA_DATABASE_TYPE=sqlite in .env and start it with
+      # `docker compose up -d --no-deps openwa`.
+      - DATABASE_TYPE=${OPENWA_DATABASE_TYPE:-postgres}
+      - DATABASE_HOST=${OPENWA_DATABASE_HOST:-postgres}
+      - DATABASE_PORT=${OPENWA_DATABASE_PORT:-5432}
+      # Postgres database name, or the SQLite file path when DATABASE_TYPE=sqlite.
+      - DATABASE_NAME=${OPENWA_DATABASE_NAME:-openwa}
+      - DATABASE_USERNAME=uptour
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - REDIS_ENABLED=false
+      - ENGINE_TYPE=whatsapp-web.js
+      - SIMULATE_TYPING=true
+      - ENABLE_SWAGGER=true
+      - AUTO_START_SESSIONS=true
+      - CORS_ORIGINS=*
+      - BRAND_NAME=${OPENWA_BRAND_NAME:-UP Heritage Tours}
+      # Webhook delivery is SSRF-guarded (default ON) and our backend is an
+      # internal target, so it must be allowlisted by exact hostname or delivery
+      # is rejected with 400. This is the documented escape hatch — much narrower
+      # than WEBHOOK_SSRF_PROTECT=false, which would disable the guard entirely.
+      # `backend` = compose service; `host.docker.internal` = backend on the host.
+      - SSRF_ALLOWED_HOSTS=${OPENWA_SSRF_ALLOWED_HOSTS:-backend,host.docker.internal}
+      # OpenWA authenticates callers via API_MASTER_KEY; must match the
+      # backend's OPENWA_API_KEY, which it sends as the X-API-Key header.
+      - API_MASTER_KEY=${OPENWA_API_KEY:?set OPENWA_API_KEY in .env}
+      # Dashboard username/password login. When empty OpenWA treats credential
+      # login as "not configured" and only accepts the raw API key as a token.
+      - ADMIN_USERNAME=${OPENWA_ADMIN_USERNAME:-}
+      - ADMIN_PASSWORD=${OPENWA_ADMIN_PASSWORD:-}
+      # NOTE: webhooks are NOT configured by env — OpenWA reads no WEBHOOK_URL/
+      # WEBHOOK_SECRET. They are per-session rows created via
+      # POST /api/sessions/:id/webhooks. See scripts/setup-openwa.sh.
+    volumes:
+      - openwa_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - uptour-net
+
+  # UP Heritage Tours Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: uptour-api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=uptour
+      - DATABASE_USERNAME=uptour
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
+      - JWT_EXPIRY=15m
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET in .env}
+      - JWT_REFRESH_EXPIRY=7d
+      - OPENWA_BASE_URL=http://openwa:2785/api
+      - OPENWA_API_KEY=${OPENWA_API_KEY:?set OPENWA_API_KEY in .env}
+      - OPENWA_WEBHOOK_SECRET=${OPENWA_WEBHOOK_SECRET:?set OPENWA_WEBHOOK_SECRET in .env}
+      - OPENWA_SESSION_ID=${OPENWA_SESSION_ID:?set OPENWA_SESSION_ID in .env — the session UUID from GET /api/sessions, not its name}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      # Required for the Data Collector (Google Maps Places API).
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
+      - APP_PORT=3000
+      - APP_URL=${APP_URL:-http://localhost:3000}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - uptour-net
+
+  # React SPA served by nginx
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked in at build time — Vite inlines env vars into the bundle.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000/api}
+    container_name: uptour-web
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - uptour-net
+
+volumes:
+  postgres_data:
+  redis_data:
+  openwa_data:
+
+networks:
+  uptour-net:
+    driver: bridge

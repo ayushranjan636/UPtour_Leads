@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+
+# Secrets — never commit real keys. Use the .env.example files as templates.
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store
+backend/uploads/*
+!backend/uploads/.gitkeep
+*.tsbuildinfo
+coverage/
+
+# `openwa` is a local symlink to a separate OpenWA checkout (its own git repo).
+# Committing it would store an absolute path that resolves nowhere else.
+# Clone OpenWA separately and point OPENWA_CONTEXT in .env at it.
+/openwa

@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2021",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": false,
+    "strictPropertyInitialization": false,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "strictBindCallApply": false,
+    "forceConsistentCasingInFileNames": false,
+    "noFallthroughCasesInSwitch": false,
+    "paths": { "@/*": ["src/*"] }
+  },
+  // Without an explicit `include`, tsc also picked up root-level files such as
+  // vitest.config.ts. That pushed the inferred rootDir up to the project root and
+  // emitted dist/src/main.js, which broke `npm run start:prod` and the Docker
+  // CMD (both expect dist/main.js). Scoping to src/ keeps the output flat.
+  "include": ["src/**/*"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/*.spec.ts",
+    "src/**/*.test.ts",
+    "src/tests/**",
+    "src/vitest.setup.ts",
+    "src/node_modules"
+  ]
+}
