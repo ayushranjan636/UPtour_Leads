@@ -12,19 +12,22 @@ import {
   Empty,
   message,
   Popconfirm,
+  Tooltip,
 } from 'antd';
 import {
   PlusOutlined,
   SearchOutlined,
-  WhatsAppOutlined,
   GlobalOutlined,
   StopOutlined,
   SafetyCertificateOutlined,
   ContactsOutlined,
+  EditOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
 import StatusTag from '../components/StatusTag';
 import { contactsAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -55,6 +58,7 @@ export default function Contacts() {
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const fetchContacts = useCallback(async () => {
     setLoading(true);
@@ -118,6 +122,27 @@ export default function Contacts() {
     }
   };
 
+  const handleDelete = async (record: Contact) => {
+    setDeletingId(record.id);
+    try {
+      await contactsAPI.remove(record.id);
+      message.success(`Deleted ${record.name}`);
+      // Stepping back a page avoids landing on an empty final page after deleting
+      // the only row on it.
+      if (data.length === 1 && page > 1) {
+        setPage(page - 1);
+      } else {
+        fetchContacts();
+      }
+    } catch (err: unknown) {
+      const detail =
+        (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      message.error(detail ?? 'Could not delete this contact');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const openEdit = (record: Contact) => {
     setEditingContact(record);
     form.setFieldsValue({
@@ -142,10 +167,12 @@ export default function Contacts() {
       dataIndex: 'name',
       key: 'name',
       render: (name: string, record: Contact) => (
-        <div>
+        <div style={{ minWidth: 0 }}>
           <Text strong style={{ display: 'block' }}>{name}</Text>
           {record.email && (
-            <Text style={{ fontSize: 12, color: '#6B7280' }}>{record.email}</Text>
+            <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+              {record.email}
+            </Text>
           )}
         </div>
       ),
@@ -155,10 +182,7 @@ export default function Contacts() {
       dataIndex: 'whatsapp_number',
       key: 'whatsapp_number',
       render: (w: string) => (
-        <Flex align="center" gap={6}>
-          <WhatsAppOutlined style={{ color: '#25D366' }} />
-          <Text style={{ fontSize: 13 }}>{w}</Text>
-        </Flex>
+        <Text style={{ fontSize: font.size.footnote }}>{w}</Text>
       ),
     },
     {
@@ -168,18 +192,18 @@ export default function Contacts() {
       render: (c: string) =>
         c ? (
           <Flex align="center" gap={6}>
-            <GlobalOutlined style={{ color: '#9CA3AF', fontSize: 13 }} />
+            <GlobalOutlined style={{ color: color.textTertiary, fontSize: 13 }} />
             {c}
           </Flex>
         ) : (
-          <Text style={{ color: '#D1D5DB' }}>—</Text>
+          <Text style={{ color: color.textTertiary }}>—</Text>
         ),
     },
     {
       title: 'Designation',
       dataIndex: 'designation',
       key: 'designation',
-      render: (d: string) => d || <Text style={{ color: '#D1D5DB' }}>—</Text>,
+      render: (d: string) => d || <Text style={{ color: color.textTertiary }}>—</Text>,
     },
     {
       title: 'Status',
@@ -191,32 +215,72 @@ export default function Contacts() {
       },
     },
     {
-      title: 'Actions',
+      title: '',
       key: 'actions',
-      width: 240,
+      width: 150,
+      align: 'right' as const,
       render: (_: unknown, record: Contact) => (
-        <Flex gap={4}>
-          <Button size="small" type="link" onClick={() => openEdit(record)}>
-            Edit
-          </Button>
-          <Button
-            size="small"
-            type="link"
-            icon={<SafetyCertificateOutlined />}
-            onClick={() => handleVerify(record.id)}
-          >
-            Verify
-          </Button>
+        <Flex gap={2} justify="flex-end" align="center">
+          <Tooltip title="Edit contact">
+            <Button
+              size="small"
+              type="text"
+              aria-label={`Edit ${record.name}`}
+              icon={<EditOutlined />}
+              onClick={() => openEdit(record)}
+            />
+          </Tooltip>
+          <Tooltip title="Verify on WhatsApp">
+            <Button
+              size="small"
+              type="text"
+              aria-label={`Verify ${record.name}`}
+              icon={<SafetyCertificateOutlined />}
+              onClick={() => handleVerify(record.id)}
+            />
+          </Tooltip>
           {!record.is_opted_out && (
             <Popconfirm
-              title="Opt out this contact?"
+              title="Stop messaging this contact?"
+              description="They stay in your records but receive no further messages."
+              okText="Opt Out"
+              cancelText="Cancel"
               onConfirm={() => handleOptOut(record.id)}
             >
-              <Button size="small" type="link" danger icon={<StopOutlined />}>
-                Opt Out
-              </Button>
+              {/* Same reason as Delete below: no Tooltip wrapper inside a Popconfirm. */}
+              <Button
+                size="small"
+                type="text"
+                title="Opt out"
+                aria-label={`Opt out ${record.name}`}
+                icon={<StopOutlined />}
+              />
             </Popconfirm>
           )}
+          {/* Permanent delete. Kept visually quiet (text button, danger colour only
+              on the icon) so it never competes with routine actions, and always
+              gated behind an explicit confirmation naming the consequence.
+              The button carries its own aria-label rather than a Tooltip: a tooltip
+              here renders above the Popconfirm (z-index 1200 vs 1060) and can
+              swallow the click on its own Delete button. */}
+          <Popconfirm
+            title={`Delete ${record.name}?`}
+            description="This also removes their messages, campaign history and leads. This cannot be undone."
+            okText="Delete"
+            okButtonProps={{ danger: true }}
+            cancelText="Cancel"
+            onConfirm={() => handleDelete(record)}
+          >
+            <Button
+              size="small"
+              type="text"
+              danger
+              loading={deletingId === record.id}
+              title="Delete contact"
+              aria-label={`Delete ${record.name}`}
+              icon={<DeleteOutlined />}
+            />
+          </Popconfirm>
         </Flex>
       ),
     },
@@ -225,17 +289,25 @@ export default function Contacts() {
   if (!loading && data.length === 0 && !search && !filterCountry) {
     return (
       <div>
-        <PageHeader title="Contacts" subtitle="0 contacts" />
-        <Flex justify="center" style={{ padding: '80px 0' }}>
+        <PageHeader title="Contacts" subtitle="No contacts yet" />
+        <Flex justify="center" style={{ padding: '72px 0' }}>
           <Empty
-            image={<ContactsOutlined style={{ fontSize: 64, color: '#D1D5DB' }} />}
+            image={<ContactsOutlined style={{ fontSize: 48, color: color.textTertiary }} />}
             description={
-              <div style={{ marginTop: 16 }}>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 8 }}>
+              <div style={{ marginTop: space.md }}>
+                <Text
+                  strong
+                  style={{
+                    fontSize: font.size.headline,
+                    display: 'block',
+                    marginBottom: 4,
+                    color: color.text,
+                  }}
+                >
                   Add your first contact
                 </Text>
-                <Text style={{ color: '#6B7280' }}>
-                  Import contacts or add them manually to get started.
+                <Text style={{ color: color.textSecondary }}>
+                  Import a list, collect from Google Maps, or add one manually.
                 </Text>
               </div>
             }
@@ -252,7 +324,7 @@ export default function Contacts() {
           confirmLoading={saving}
           onCancel={() => { setModalOpen(false); form.resetFields(); }}
           okText="Create"
-          width={480}
+          width={460}
         >
           <ContactForm form={form} />
         </Modal>
@@ -264,7 +336,7 @@ export default function Contacts() {
     <div>
       <PageHeader
         title="Contacts"
-        subtitle={`${total} contacts total`}
+        subtitle={`${total.toLocaleString()} ${total === 1 ? 'contact' : 'contacts'}`}
         actions={
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             Add Contact
@@ -272,19 +344,21 @@ export default function Contacts() {
         }
       />
 
-      <Flex gap={12} style={{ marginBottom: 20 }}>
+      <Flex gap={space.sm} wrap style={{ marginBottom: space.lg }}>
         <Input
-          placeholder="Search contacts..."
-          prefix={<SearchOutlined style={{ color: '#9CA3AF' }} />}
-          style={{ maxWidth: 320 }}
+          placeholder="Search name, number, or email"
+          aria-label="Search contacts"
+          prefix={<SearchOutlined style={{ color: color.textTertiary }} />}
+          style={{ maxWidth: 300, flex: '1 1 220px' }}
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           allowClear
         />
         <Select
-          placeholder="Country"
+          placeholder="All countries"
+          aria-label="Filter by country"
           allowClear
-          style={{ width: 180 }}
+          style={{ width: 168 }}
           value={filterCountry}
           onChange={(v) => { setFilterCountry(v); setPage(1); }}
           options={[
@@ -305,19 +379,22 @@ export default function Contacts() {
           dataSource={data}
           columns={columns}
           rowKey="id"
+          size="middle"
+          // Keeps the action column reachable instead of squashing cells on mobile.
+          scroll={{ x: 'max-content' }}
           pagination={{
             current: page,
             pageSize,
             total,
             showSizeChanger: true,
-            showTotal: (t) => `${t} contacts`,
+            showTotal: (t) => `${t.toLocaleString()} ${t === 1 ? 'contact' : 'contacts'}`,
             onChange: (p, ps) => { setPage(p); setPageSize(ps); },
           }}
           style={{
-            background: '#FFF',
-            borderRadius: 14,
+            background: color.surface,
+            borderRadius: radius.xl,
             overflow: 'hidden',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            border: `1px solid ${color.separator}`,
           }}
         />
       </Spin>

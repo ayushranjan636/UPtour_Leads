@@ -1,91 +1,282 @@
 import type { ThemeConfig } from 'antd';
+import { color, font, grey, material, radius, shadow } from './tokens';
 
+/**
+ * Ant Design theme mapped onto the Apple-inspired tokens in `tokens.ts`.
+ *
+ * Deliberate departures from the previous configuration:
+ *  - System font stack instead of Inter, so text renders in the OS face.
+ *  - One blue accent replaces the indigo/violet pair; gradients are gone.
+ *  - Tighter radii and softer shadows: surfaces sit close to the page rather than
+ *    floating as heavily-shadowed cards.
+ *  - Control height 36 (was 40) with a 15px menu/label rhythm — denser, closer to
+ *    macOS, while list rows stay >=44px for comfortable targets.
+ */
 const themeConfig: ThemeConfig = {
   token: {
-    colorPrimary: '#4F46E5',
-    colorSuccess: '#10B981',
-    colorWarning: '#F59E0B',
-    colorError: '#EF4444',
-    colorInfo: '#4F46E5',
-    colorBgBase: '#FFFFFF',
-    colorBgLayout: '#F5F7FA',
-    colorBorder: '#E5E7EB',
-    colorBorderSecondary: '#F0F0F0',
-    borderRadius: 10,
-    borderRadiusLG: 14,
-    borderRadiusSM: 8,
-    fontFamily:
-      "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-    fontSize: 14,
-    fontSizeHeading1: 30,
-    fontSizeHeading2: 24,
-    fontSizeHeading3: 20,
-    fontSizeHeading4: 16,
-    controlHeight: 40,
+    colorPrimary: color.accent,
+    colorSuccess: color.success,
+    colorWarning: color.warning,
+    colorError: color.danger,
+    colorInfo: color.info,
+    colorLink: color.accent,
+
+    colorBgBase: color.surface,
+    colorBgLayout: color.canvas,
+    colorBgContainer: color.surface,
+    colorBgElevated: color.elevated,
+    colorFillQuaternary: color.fill,
+
+    colorTextBase: color.text,
+    colorText: color.text,
+    colorTextSecondary: color.textSecondary,
+    colorTextTertiary: color.textTertiary,
+    colorTextDescription: color.textSecondary,
+    // Ant's defaults for these are alpha-based (rgba(...,0.25)), which measured
+    // 1.7:1 against white — placeholders and disabled field values were effectively
+    // invisible. Both are pinned to the AA-passing grey instead.
+    colorTextPlaceholder: color.textSecondary,
+    colorTextDisabled: color.textSecondary,
+
+    colorBorder: color.separatorOpaque,
+    colorBorderSecondary: color.separator,
+
+    borderRadius: radius.md,
+    borderRadiusLG: radius.xl,
+    borderRadiusSM: radius.sm,
+    borderRadiusXS: radius.sm,
+
+    fontFamily: font.family,
+    fontFamilyCode: font.mono,
+    fontSize: font.size.body,
+    fontSizeSM: font.size.footnote,
+    fontSizeLG: font.size.callout,
+    fontSizeHeading1: font.size.title1,
+    fontSizeHeading2: font.size.title2,
+    fontSizeHeading3: font.size.title3,
+    fontSizeHeading4: font.size.headline,
+    fontSizeHeading5: font.size.callout,
+    lineHeight: 1.47,
+
+    controlHeight: 36,
+    controlHeightLG: 44,
+    controlHeightSM: 28,
     lineWidth: 1,
-    boxShadow:
-      '0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.03)',
-    boxShadowSecondary:
-      '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03)',
-    colorTextBase: '#111827',
-    colorTextSecondary: '#6B7280',
-    colorBgContainer: '#FFFFFF',
+
+    boxShadow: shadow.md,
+    boxShadowSecondary: shadow.lg,
+    boxShadowTertiary: shadow.sm,
+
+    // Keep motion brief; global.css disables it under prefers-reduced-motion.
+    motionDurationFast: '0.12s',
+    motionDurationMid: '0.2s',
+    motionDurationSlow: '0.28s',
+
     paddingLG: 24,
     paddingMD: 16,
     paddingSM: 12,
     paddingXS: 8,
+    wireframe: false,
   },
   components: {
     Layout: {
-      siderBg: '#FFFFFF',
-      headerBg: '#FFFFFF',
-      bodyBg: '#F5F7FA',
-      triggerBg: '#F0F0F0',
-      triggerColor: '#6B7280',
+      // Navigation chrome is painted in AppLayout with the glass material; these
+      // values are the opaque fallback beneath it.
+      siderBg: material.fallback,
+      headerBg: material.fallback,
+      bodyBg: color.canvas,
+      headerHeight: 52,
+      headerPadding: '0 20px',
     },
     Menu: {
       itemBg: 'transparent',
-      itemSelectedBg: '#EEF2FF',
-      itemSelectedColor: '#4F46E5',
-      itemHoverBg: '#F9FAFB',
-      itemColor: '#6B7280',
-      itemActiveBg: '#EEF2FF',
-      iconSize: 18,
-      itemHeight: 44,
-      itemMarginInline: 8,
-      itemBorderRadius: 10,
+      subMenuItemBg: 'transparent',
+      itemSelectedBg: color.accentSoft,
+      itemSelectedColor: color.accent,
+      itemHoverBg: 'rgba(60, 60, 67, 0.06)',
+      itemHoverColor: color.text,
+      itemColor: color.textSecondary,
+      itemActiveBg: color.accentSoft,
+      iconSize: 16,
+      iconMarginInlineEnd: 10,
+      itemHeight: 34,
+      itemMarginInline: 6,
+      itemMarginBlock: 2,
+      itemBorderRadius: radius.md,
+      itemPaddingInline: 10,
+      fontSize: font.size.footnote,
+      collapsedIconSize: 18,
     },
     Button: {
-      primaryShadow: '0 2px 4px rgba(79, 70, 229, 0.2)',
-      fontWeight: 500,
+      // Flat primaries: a coloured shadow under every button reads as bootstrap-era
+      // styling and competes with real elevation.
+      primaryShadow: 'none',
+      defaultShadow: 'none',
+      dangerShadow: 'none',
+      fontWeight: font.weight.medium,
+      paddingInline: 14,
+      defaultBg: color.surface,
+      defaultBorderColor: color.separatorOpaque,
+      defaultColor: color.text,
     },
     Card: {
-      borderRadiusLG: 14,
-      paddingLG: 24,
+      borderRadiusLG: radius.xl,
+      paddingLG: 20,
+      headerHeight: 48,
+      headerFontSize: font.size.callout,
+      colorBorderSecondary: color.separator,
     },
     Table: {
-      headerBg: '#FAFBFC',
-      headerColor: '#6B7280',
-      rowHoverBg: '#F9FAFB',
-      borderColor: '#F0F0F0',
+      headerBg: color.fill,
+      headerColor: color.textSecondary,
+      headerSplitColor: 'transparent',
+      rowHoverBg: 'rgba(60, 60, 67, 0.035)',
+      rowSelectedBg: color.accentSofter,
+      rowSelectedHoverBg: color.accentSoft,
+      borderColor: color.separator,
+      cellPaddingBlock: 12,
+      cellPaddingInline: 16,
+      headerBorderRadius: 0,
+      fontSize: font.size.body,
     },
     Input: {
-      activeBorderColor: '#4F46E5',
-      hoverBorderColor: '#A5B4FC',
+      activeBorderColor: color.accent,
+      hoverBorderColor: grey[400],
+      activeShadow: `0 0 0 3px ${color.accentRing}`,
+      paddingBlock: 6,
+      paddingInline: 11,
+      colorBgContainer: color.surface,
+    },
+    InputNumber: {
+      activeBorderColor: color.accent,
+      hoverBorderColor: grey[400],
+      activeShadow: `0 0 0 3px ${color.accentRing}`,
     },
     Select: {
-      optionSelectedBg: '#EEF2FF',
+      optionSelectedBg: color.accentSoft,
+      optionSelectedColor: color.accent,
+      optionSelectedFontWeight: font.weight.medium,
+      activeBorderColor: color.accent,
+      hoverBorderColor: grey[400],
+      activeOutlineColor: color.accentRing,
+      borderRadius: radius.md,
     },
     Tag: {
-      borderRadiusSM: 6,
+      borderRadiusSM: radius.sm,
+      defaultBg: color.fill,
+      defaultColor: color.textSecondary,
+      fontSizeSM: font.size.caption,
+      lineHeightSM: 1.6,
     },
     Tabs: {
-      inkBarColor: '#4F46E5',
-      itemSelectedColor: '#4F46E5',
-      itemHoverColor: '#6366F1',
+      inkBarColor: color.accent,
+      itemSelectedColor: color.text,
+      itemHoverColor: color.text,
+      itemColor: color.textSecondary,
+      titleFontSize: font.size.body,
+      horizontalItemGutter: 24,
+      horizontalItemPadding: '10px 0',
     },
     Steps: {
-      colorPrimary: '#4F46E5',
+      colorPrimary: color.accent,
+    },
+    Modal: {
+      borderRadiusLG: radius.xxl,
+      contentBg: color.elevated,
+      headerBg: color.elevated,
+      titleFontSize: font.size.headline,
+      paddingContentHorizontalLG: 24,
+    },
+    Drawer: {
+      colorBgElevated: color.elevated,
+      paddingLG: 20,
+    },
+    Popover: {
+      colorBgElevated: color.elevated,
+      borderRadiusLG: radius.xl,
+    },
+    Dropdown: {
+      colorBgElevated: color.elevated,
+      borderRadiusLG: radius.lg,
+      controlItemBgHover: 'rgba(60, 60, 67, 0.06)',
+      paddingBlock: 5,
+    },
+    Tooltip: {
+      colorBgSpotlight: 'rgba(28, 28, 30, 0.92)',
+      borderRadius: radius.md,
+      fontSize: font.size.footnote,
+    },
+    Progress: {
+      defaultColor: color.accent,
+      remainingColor: color.fillStrong,
+    },
+    Badge: {
+      textFontSize: font.size.caption,
+      textFontSizeSM: 10,
+    },
+    Avatar: {
+      // Flat tint rather than a gradient — see AppLayout.
+      colorTextPlaceholder: color.accent,
+    },
+    Segmented: {
+      itemSelectedBg: color.surface,
+      itemSelectedColor: color.text,
+      trackBg: color.fillStrong,
+      borderRadius: radius.md,
+    },
+    Form: {
+      labelColor: color.text,
+      labelFontSize: font.size.footnote,
+      verticalLabelPadding: '0 0 6px',
+      itemMarginBottom: 18,
+    },
+    Empty: {
+      colorTextDescription: color.textSecondary,
+    },
+    Statistic: {
+      titleFontSize: font.size.footnote,
+      contentFontSize: font.size.title2,
+    },
+    Descriptions: {
+      labelColor: color.textSecondary,
+      titleColor: color.text,
+    },
+    List: {
+      itemPadding: '12px 16px',
+    },
+    Divider: {
+      colorSplit: color.separator,
+    },
+    Alert: {
+      borderRadiusLG: radius.lg,
+    },
+    Spin: {
+      colorPrimary: color.accent,
+    },
+    // Toasts default to Ant's bright #52C41A, the one element that ignored the
+    // palette. Pin the feedback surfaces to the theme's status colours.
+    Message: {
+      colorSuccess: color.success,
+      colorError: color.danger,
+      colorWarning: color.warning,
+      colorInfo: color.accent,
+      contentBg: color.elevated,
+      borderRadiusLG: radius.lg,
+    },
+    Notification: {
+      colorSuccess: color.success,
+      colorError: color.danger,
+      colorWarning: color.warning,
+      colorInfo: color.accent,
+    },
+    Result: {
+      colorSuccess: color.success,
+      colorError: color.danger,
+    },
+    Switch: {
+      handleSize: 18,
+      trackHeight: 22,
+      trackMinWidth: 40,
     },
   },
 };

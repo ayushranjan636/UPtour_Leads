@@ -1,53 +1,64 @@
 import { Outlet } from 'react-router-dom';
 import { Flex, Typography } from 'antd';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
+/**
+ * Sign-in shell.
+ *
+ * The previous version used a three-stop lavender/pink gradient background plus a
+ * gradient logo tile with a coloured glow. Decorative gradients are the clearest
+ * "generic template" signal, so this is a plain, calm surface: the form is the only
+ * thing on screen worth attention.
+ */
 export default function AuthLayout() {
   return (
     <div
       style={{
         minHeight: '100vh',
-        background: 'linear-gradient(135deg, #EEF2FF 0%, #F5F7FA 50%, #FDF4FF 100%)',
+        background: color.canvas,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: 24,
+        padding: space.xl,
       }}
     >
-      <div style={{ width: '100%', maxWidth: 420 }}>
-        <Flex align="center" justify="center" gap={14} style={{ marginBottom: 40 }}>
+      <div style={{ width: '100%', maxWidth: 380 }}>
+        <Flex vertical align="center" gap={space.md} style={{ marginBottom: space.xxl }}>
           <div
+            aria-hidden
             style={{
-              width: 48,
-              height: 48,
-              borderRadius: 14,
-              background: 'linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)',
+              width: 44,
+              height: 44,
+              borderRadius: radius.xl,
+              background: color.accent,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: '#FFF',
-              fontWeight: 800,
-              fontSize: 20,
-              boxShadow: '0 4px 14px rgba(79, 70, 229, 0.3)',
+              color: color.textOnAccent,
+              fontWeight: font.weight.bold,
+              fontSize: 17,
+              letterSpacing: '-0.02em',
             }}
           >
             UP
           </div>
-          <div>
+          <div style={{ textAlign: 'center' }}>
             <Text
               strong
               style={{
-                fontSize: 22,
+                fontSize: font.size.title3,
                 display: 'block',
-                lineHeight: 1.2,
-                color: '#111827',
+                lineHeight: 1.25,
+                letterSpacing: '-0.02em',
+                color: color.text,
               }}
             >
               UP Heritage Tours
             </Text>
-            <Text style={{ fontSize: 13, color: '#6B7280' }}>
-              Customer Relationship Management
+            <Text style={{ fontSize: font.size.footnote, color: color.textSecondary }}>
+              Sign in to continue
             </Text>
           </div>
         </Flex>

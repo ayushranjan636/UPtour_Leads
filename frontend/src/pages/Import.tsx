@@ -18,6 +18,7 @@ import {
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
 import { importsAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 import type { UploadFile } from 'antd';
 
 const { Text } = Typography;
@@ -192,7 +193,7 @@ export default function Import() {
         subtitle="Import contacts from CSV or Excel files"
       />
 
-      <Card style={{ borderRadius: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
+      <Card style={{ borderRadius: radius.xl, border: `1px solid ${color.separator}` }}>
         <Steps
           current={currentStep}
           items={steps}
@@ -212,18 +213,26 @@ export default function Import() {
                 }}
                 style={{
                   padding: '40px 20px',
-                  borderRadius: 14,
-                  border: '2px dashed #D1D5DB',
-                  background: '#FAFBFC',
+                  borderRadius: radius.xl,
+                  border: `2px dashed ${color.textTertiary}`,
+                  background: color.fill,
                 }}
               >
-                <p style={{ marginBottom: 16 }}>
-                  <InboxOutlined style={{ fontSize: 48, color: '#4F46E5' }} />
+                <p style={{ marginBottom: space.lg }}>
+                  <InboxOutlined style={{ fontSize: 48, color: color.accent }} />
                 </p>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 8 }}>
+                <Text
+                  strong
+                  style={{
+                    fontSize: font.size.headline,
+                    display: 'block',
+                    marginBottom: space.sm,
+                    color: color.text,
+                  }}
+                >
                   Drop your file here, or click to browse
                 </Text>
-                <Text style={{ color: '#6B7280' }}>
+                <Text style={{ color: color.textSecondary }}>
                   Supports CSV and Excel files (.csv, .xlsx, .xls)
                 </Text>
               </Dragger>
@@ -234,7 +243,7 @@ export default function Import() {
         {/* Step 2 — Map columns */}
         {currentStep === 1 && preview && (
           <div>
-            <Text style={{ color: '#6B7280', display: 'block', marginBottom: 8 }}>
+            <Text style={{ color: color.textSecondary, display: 'block', marginBottom: space.sm }}>
               {preview.total} rows found. Map your columns to CRM fields.
             </Text>
             {preview.rows.length > 0 && (
@@ -242,7 +251,7 @@ export default function Import() {
                 message={`Preview: First ${Math.min(preview.rows.length, 3)} rows shown below the mapping`}
                 type="info"
                 showIcon
-                style={{ marginBottom: 20, borderRadius: 10 }}
+                style={{ marginBottom: space.xl, borderRadius: radius.lg }}
               />
             )}
             <div
@@ -254,11 +263,25 @@ export default function Import() {
                 maxWidth: 700,
               }}
             >
-              <Text strong style={{ fontSize: 12, color: '#6B7280', textTransform: 'uppercase' }}>
+              <Text
+                strong
+                style={{
+                  fontSize: font.size.caption,
+                  color: color.textSecondary,
+                  textTransform: 'uppercase',
+                }}
+              >
                 File Column
               </Text>
               <div />
-              <Text strong style={{ fontSize: 12, color: '#6B7280', textTransform: 'uppercase' }}>
+              <Text
+                strong
+                style={{
+                  fontSize: font.size.caption,
+                  color: color.textSecondary,
+                  textTransform: 'uppercase',
+                }}
+              >
                 CRM Field
               </Text>
 
@@ -267,15 +290,15 @@ export default function Import() {
                   <div
                     style={{
                       padding: '8px 14px',
-                      background: '#F3F4F6',
-                      borderRadius: 8,
-                      fontWeight: 500,
-                      fontSize: 13,
+                      background: color.fill,
+                      borderRadius: radius.md,
+                      fontWeight: font.weight.medium,
+                      fontSize: font.size.footnote,
                     }}
                   >
                     {col}
                   </div>
-                  <Text style={{ color: '#D1D5DB', fontSize: 18 }}>→</Text>
+                  <Text style={{ color: color.textTertiary, fontSize: 18 }}>→</Text>
                   <Select
                     value={mapping[col]}
                     onChange={(val) => setMapping({ ...mapping, [col]: val })}
@@ -288,7 +311,7 @@ export default function Import() {
               ))}
             </div>
 
-            <Flex justify="flex-end" gap={12} style={{ marginTop: 32 }}>
+            <Flex justify="flex-end" gap={space.md} style={{ marginTop: space.xxl }}>
               <Button onClick={() => { setCurrentStep(0); setPreview(null); }}>Back</Button>
               <Button type="primary" onClick={handleMap}>
                 Import Data
@@ -301,19 +324,19 @@ export default function Import() {
         {currentStep === 2 && (
           <div style={{ maxWidth: 500, margin: '0 auto', textAlign: 'center' }}>
             {!importDone ? (
-              <Flex vertical align="center" gap={24}>
-                <Text strong style={{ fontSize: 18, color: '#111827' }}>
+              <Flex vertical align="center" gap={space.xl}>
+                <Text strong style={{ fontSize: font.size.headline, color: color.text }}>
                   Importing contacts...
                 </Text>
                 <Spin size="large" spinning={importing} />
-                <Text style={{ color: '#6B7280' }}>This may take a moment</Text>
+                <Text style={{ color: color.textSecondary }}>This may take a moment</Text>
               </Flex>
             ) : (
               <Result
                 status={importResult?.status === 'failed' ? 'error' : 'success'}
                 icon={
                   importResult?.status === 'failed' ? undefined : (
-                    <CheckCircleOutlined style={{ color: '#10B981' }} />
+                    <CheckCircleOutlined style={{ color: color.success }} />
                   )
                 }
                 title={

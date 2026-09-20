@@ -12,6 +12,7 @@ import {
   Button,
   Popover,
   Empty,
+  Tooltip,
 } from 'antd';
 import {
   DashboardOutlined,
@@ -31,22 +32,64 @@ import {
 } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import { notificationsAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Sider, Header, Content } = Layout;
 const { Text } = Typography;
 
+/**
+ * Navigation is grouped by task rather than presented as one flat list of ten
+ * items: sourcing contacts, running outreach, and working the pipeline are distinct
+ * jobs, and a titled group makes the structure scannable (HIG: sidebars express
+ * task structure).
+ */
 const menuItems = [
   { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
-  { key: '/contacts', icon: <ContactsOutlined />, label: 'Contacts' },
-  { key: '/companies', icon: <BankOutlined />, label: 'Companies' },
-  { key: '/campaigns', icon: <SendOutlined />, label: 'Campaigns' },
-  { key: '/leads', icon: <FunnelPlotOutlined />, label: 'Leads' },
-  { key: '/deals', icon: <DollarOutlined />, label: 'Deals' },
-  { key: '/conversations', icon: <MessageOutlined />, label: 'Conversations' },
-  { key: '/data-collector', icon: <CloudDownloadOutlined />, label: 'Data Collector' },
-  { key: '/import', icon: <ImportOutlined />, label: 'Import' },
+  {
+    type: 'group' as const,
+    label: 'Audience',
+    children: [
+      { key: '/contacts', icon: <ContactsOutlined />, label: 'Contacts' },
+      { key: '/companies', icon: <BankOutlined />, label: 'Companies' },
+      { key: '/data-collector', icon: <CloudDownloadOutlined />, label: 'Data Collector' },
+      { key: '/import', icon: <ImportOutlined />, label: 'Import' },
+    ],
+  },
+  {
+    type: 'group' as const,
+    label: 'Outreach',
+    children: [
+      { key: '/campaigns', icon: <SendOutlined />, label: 'Campaigns' },
+      { key: '/conversations', icon: <MessageOutlined />, label: 'Conversations' },
+    ],
+  },
+  {
+    type: 'group' as const,
+    label: 'Pipeline',
+    children: [
+      { key: '/leads', icon: <FunnelPlotOutlined />, label: 'Leads' },
+      { key: '/deals', icon: <DollarOutlined />, label: 'Deals' },
+    ],
+  },
   { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
 ];
+
+/** Flat list of routes, used to resolve the selected key from the URL. */
+const routeKeys = menuItems.flatMap((item) =>
+  'children' in item && item.children
+    ? item.children.map((child) => child.key)
+    : 'key' in item && item.key
+      ? [item.key]
+      : [],
+);
+
+/**
+ * Collapsed sidebar variant: the same items without group headings, which would
+ * otherwise truncate to "Au…" / "Ou…" / "Pip…" in a 64px rail.
+ */
+const collapsedMenuItems = menuItems.flatMap((item) =>
+  'children' in item && item.children ? item.children : [item],
+);
 
 interface Notification {
   id: string;
@@ -60,6 +103,17 @@ interface Notification {
 
 export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
+  /**
+   * Narrow viewports get a genuinely different navigation model rather than a
+   * squeezed desktop one: the sidebar leaves the flow entirely and slides over the
+   * content as an overlay. Previously `collapsed` was plain state with no breakpoint,
+   * so a 390px window kept a fixed 236px sidebar and left 154px for content — text
+   * wrapped to one character per line.
+   */
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 768,
+  );
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
@@ -67,10 +121,29 @@ export default function AppLayout() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifOpen, setNotifOpen] = useState(false);
 
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 767px)');
+    const apply = (matches: boolean) => {
+      setIsMobile(matches);
+      // Leaving mobile: drop the overlay so the sidebar returns to the flow expanded.
+      if (!matches) setMobileNavOpen(false);
+    };
+    apply(query.matches);
+    const onChange = (e: MediaQueryListEvent) => apply(e.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+
+  // Navigating on mobile should dismiss the overlay, matching platform behaviour.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
+
   const selectedKey =
-    menuItems.find(
-      (item) => item.key !== '/' && location.pathname.startsWith(item.key),
-    )?.key || '/';
+    routeKeys
+      .filter((key) => key !== '/' && location.pathname.startsWith(key))
+      // Longest match wins so `/campaigns/:id` selects `/campaigns`.
+      .sort((a, b) => b.length - a.length)[0] || '/';
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -111,30 +184,51 @@ export default function AppLayout() {
 
   const userMenu = {
     items: [
+      {
+        key: 'account',
+        label: (
+          <div style={{ padding: '2px 0', lineHeight: 1.35 }}>
+            <Text strong style={{ fontSize: font.size.footnote, display: 'block' }}>
+              {user?.name || 'Admin'}
+            </Text>
+            <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+              {user?.email || ''}
+            </Text>
+          </div>
+        ),
+        disabled: true,
+      },
       { type: 'divider' as const },
-      { key: 'logout', icon: <LogoutOutlined />, label: 'Logout', danger: true },
+      { key: 'settings', icon: <SettingOutlined />, label: 'Settings' },
+      { key: 'logout', icon: <LogoutOutlined />, label: 'Sign Out', danger: true },
     ],
     onClick: ({ key }: { key: string }) => {
       if (key === 'logout') logout();
+      if (key === 'settings') navigate('/settings');
     },
   };
 
   const notifContent = (
-    <div style={{ width: 340 }}>
+    <div style={{ width: 320 }}>
       <Flex
         justify="space-between"
         align="center"
-        style={{ padding: '8px 12px', borderBottom: '1px solid #F0F0F0' }}
+        style={{
+          padding: `${space.sm}px ${space.md}px`,
+          borderBottom: `1px solid ${color.separator}`,
+        }}
       >
-        <Text strong style={{ fontSize: 14 }}>Notifications</Text>
+        <Text strong style={{ fontSize: font.size.footnote }}>
+          Notifications
+        </Text>
         {unreadCount > 0 && (
-          <Button type="link" size="small" onClick={handleMarkAllRead}>
+          <Button type="link" size="small" onClick={handleMarkAllRead} style={{ paddingInline: 0 }}>
             Mark all read
           </Button>
         )}
       </Flex>
       {notifications.length === 0 ? (
-        <div style={{ padding: 24 }}>
+        <div style={{ padding: space.xl }}>
           <Empty description="No notifications" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </div>
       ) : (
@@ -145,23 +239,49 @@ export default function AppLayout() {
             return (
               <List.Item
                 style={{
-                  padding: '10px 12px',
-                  cursor: 'pointer',
-                  background: isRead ? 'transparent' : '#F0F5FF',
+                  padding: `10px ${space.md}px`,
+                  cursor: isRead ? 'default' : 'pointer',
+                  background: isRead ? 'transparent' : color.accentSofter,
                 }}
                 onClick={() => {
                   if (!isRead) handleMarkRead(item.id);
                 }}
               >
                 <div>
-                  <Text strong={!isRead} style={{ fontSize: 13, display: 'block' }}>
-                    {item.title ?? 'Notification'}
-                  </Text>
-                  <Text style={{ fontSize: 12, color: '#6B7280' }}>
+                  <Flex align="center" gap={6}>
+                    {/* Unread is marked by a dot as well as weight, so the state is
+                        not communicated by background colour alone. */}
+                    {!isRead && (
+                      <span
+                        aria-hidden
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: radius.pill,
+                          background: color.accent,
+                          flexShrink: 0,
+                        }}
+                      />
+                    )}
+                    <Text
+                      strong={!isRead}
+                      style={{ fontSize: font.size.footnote, display: 'block' }}
+                    >
+                      {item.title ?? 'Notification'}
+                    </Text>
+                  </Flex>
+                  <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
                     {item.message ?? item.body ?? ''}
                   </Text>
                   {item.created_at && (
-                    <Text style={{ fontSize: 11, color: '#9CA3AF', display: 'block', marginTop: 2 }}>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        color: color.textTertiary,
+                        display: 'block',
+                        marginTop: 2,
+                      }}
+                    >
                       {new Date(item.created_at).toLocaleString()}
                     </Text>
                   )}
@@ -169,147 +289,207 @@ export default function AppLayout() {
               </List.Item>
             );
           }}
-          style={{ maxHeight: 400, overflowY: 'auto' }}
+          style={{ maxHeight: 380, overflowY: 'auto' }}
         />
       )}
     </div>
   );
 
+  // On mobile the sidebar is an overlay driven by `mobileNavOpen`; on desktop it is
+  // in the flow and `collapsed` narrows it to icons.
+  const sidebarCollapsed = isMobile ? false : collapsed;
+  const sidebarWidth = 236;
+  const contentOffset = isMobile ? 0 : collapsed ? 64 : sidebarWidth;
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
+      {/* Scrim: dismisses the overlay and prevents interaction with content behind it. */}
+      {isMobile && mobileNavOpen && (
+        <div
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.28)',
+            zIndex: 100,
+          }}
+        />
+      )}
+
       <Sider
         trigger={null}
         collapsible
-        collapsed={collapsed}
-        width={260}
+        collapsed={sidebarCollapsed}
+        width={sidebarWidth}
+        collapsedWidth={64}
+        className="glass-sidebar"
         style={{
-          background: '#FFFFFF',
-          borderRight: '1px solid #F0F0F0',
+          borderRight: `1px solid ${color.separator}`,
           position: 'fixed',
           left: 0,
           top: 0,
           bottom: 0,
-          zIndex: 100,
-          overflow: 'auto',
+          zIndex: 101,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          // Slide out of view on mobile until invoked.
+          transform: isMobile && !mobileNavOpen ? `translateX(-${sidebarWidth}px)` : 'translateX(0)',
+          transition: `transform var(--duration-base) var(--easing)`,
         }}
       >
         <Flex
           align="center"
-          gap={12}
+          gap={10}
           style={{
-            padding: collapsed ? '20px 16px' : '20px 24px',
-            borderBottom: '1px solid #F0F0F0',
-            marginBottom: 8,
-            justifyContent: collapsed ? 'center' : 'flex-start',
+            height: 52,
+            padding: sidebarCollapsed ? '0 16px' : `0 ${space.lg}px`,
+            marginBottom: space.sm,
+            justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
           }}
         >
+          {/* Flat monogram. The previous indigo→violet gradient read as generic
+              template branding; a solid mark is quieter and more precise. */}
           <div
+            aria-hidden
             style={{
-              width: 36,
-              height: 36,
-              borderRadius: 10,
-              background: 'linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)',
+              width: 26,
+              height: 26,
+              borderRadius: radius.md,
+              background: color.accent,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: '#FFF',
-              fontWeight: 700,
-              fontSize: 16,
+              color: color.textOnAccent,
+              fontWeight: font.weight.bold,
+              fontSize: 12,
+              letterSpacing: '-0.02em',
               flexShrink: 0,
             }}
           >
             UP
           </div>
-          {!collapsed && (
-            <div style={{ overflow: 'hidden' }}>
-              <Text
-                strong
-                style={{
-                  fontSize: 15,
-                  display: 'block',
-                  lineHeight: 1.3,
-                  color: '#111827',
-                }}
-              >
-                UP Heritage
-              </Text>
-              <Text style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.2 }}>
-                Tours CRM
-              </Text>
-            </div>
+          {!sidebarCollapsed && (
+            <Text
+              strong
+              style={{
+                fontSize: font.size.callout,
+                color: color.text,
+                letterSpacing: '-0.01em',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              UP Heritage Tours
+            </Text>
           )}
         </Flex>
 
         <Menu
           mode="inline"
           selectedKeys={[selectedKey]}
-          items={menuItems}
+          // Group headings truncate to "Au…" at 64px wide, so drop to a flat list
+          // when collapsed and let the icons carry the structure.
+          items={sidebarCollapsed ? collapsedMenuItems : menuItems}
           onClick={({ key }) => navigate(key)}
-          style={{ border: 'none', padding: '0 8px' }}
+          style={{ border: 'none', padding: `0 ${space.sm}px`, background: 'transparent' }}
         />
       </Sider>
 
       <Layout
         style={{
-          marginLeft: collapsed ? 80 : 260,
-          transition: 'margin-left 0.2s',
+          marginLeft: contentOffset,
+          transition: `margin-left var(--duration-base) var(--easing)`,
+          // Without this a wide table can stretch the flex child and break the
+          // fixed-offset layout on narrow screens.
+          minWidth: 0,
         }}
       >
         <Header
+          className="glass-header"
           style={{
-            background: '#FFFFFF',
-            padding: '0 32px',
+            padding: `0 ${isMobile ? space.lg : space.xl}px`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            borderBottom: '1px solid #F0F0F0',
-            height: 64,
+            borderBottom: `1px solid ${color.separator}`,
+            height: 52,
             position: 'sticky',
             top: 0,
             zIndex: 99,
           }}
         >
-          <div
-            onClick={() => setCollapsed(!collapsed)}
-            style={{ cursor: 'pointer', fontSize: 18, color: '#6B7280' }}
-          >
-            {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-          </div>
+          <Tooltip title={isMobile ? 'Menu' : collapsed ? 'Show sidebar' : 'Hide sidebar'}>
+            <Button
+              type="text"
+              aria-label={isMobile ? 'Open navigation menu' : collapsed ? 'Show sidebar' : 'Hide sidebar'}
+              aria-expanded={isMobile ? mobileNavOpen : !collapsed}
+              onClick={() =>
+                isMobile ? setMobileNavOpen((open) => !open) : setCollapsed((value) => !value)
+              }
+              icon={
+                isMobile || collapsed ? (
+                  <MenuUnfoldOutlined style={{ fontSize: 16 }} />
+                ) : (
+                  <MenuFoldOutlined style={{ fontSize: 16 }} />
+                )
+              }
+              style={{ color: color.textSecondary }}
+            />
+          </Tooltip>
 
-          <Flex align="center" gap={20}>
+          <Flex align="center" gap={space.sm}>
             <Popover
               content={notifContent}
               trigger="click"
               open={notifOpen}
               onOpenChange={setNotifOpen}
               placement="bottomRight"
+              styles={{ root: { padding: 0 } }}
             >
-              <Badge count={unreadCount} size="small" offset={[-2, 2]}>
+              <Badge count={unreadCount} size="small" offset={[-4, 4]}>
                 <Button
                   type="text"
-                  icon={<BellOutlined style={{ fontSize: 18 }} />}
-                  style={{ color: '#6B7280' }}
+                  aria-label={
+                    unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'
+                  }
+                  icon={<BellOutlined style={{ fontSize: 16 }} />}
+                  style={{ color: color.textSecondary }}
                 />
               </Badge>
             </Popover>
 
             <Dropdown menu={userMenu} placement="bottomRight" trigger={['click']}>
-              <Flex align="center" gap={10} style={{ cursor: 'pointer' }}>
+              <Flex
+                align="center"
+                gap={8}
+                role="button"
+                tabIndex={0}
+                aria-label="Account menu"
+                style={{
+                  cursor: 'pointer',
+                  padding: `4px ${space.sm}px 4px 4px`,
+                  borderRadius: radius.pill,
+                }}
+              >
                 <Avatar
-                  size={34}
+                  size={26}
                   style={{
-                    background: 'linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)',
-                    fontWeight: 600,
+                    background: color.accentSoft,
+                    color: color.accent,
+                    fontWeight: font.weight.semibold,
+                    fontSize: 12,
                   }}
                 >
-                  {user?.name?.charAt(0) || 'A'}
+                  {user?.name?.charAt(0).toUpperCase() || 'A'}
                 </Avatar>
-                <div style={{ lineHeight: 1.3 }}>
-                  <Text strong style={{ fontSize: 13, display: 'block' }}>
+                {/* The role line was hard-coded to "Admin" for every account. This is
+                    a single-operator tool, so the name alone is the useful label.
+                    Hidden on mobile where header space is scarce. */}
+                {!isMobile && (
+                  <Text style={{ fontSize: font.size.footnote, color: color.text }}>
                     {user?.name || 'Admin'}
                   </Text>
-                  <Text style={{ fontSize: 11, color: '#9CA3AF' }}>Admin</Text>
-                </div>
+                )}
               </Flex>
             </Dropdown>
           </Flex>
@@ -317,12 +497,17 @@ export default function AppLayout() {
 
         <Content
           style={{
-            padding: 32,
-            minHeight: 'calc(100vh - 64px)',
-            background: '#F5F7FA',
+            padding: isMobile
+              ? `${space.lg}px ${space.lg}px ${space.xxl}px`
+              : `${space.xl}px ${space.xxl}px ${space.xxxl}px`,
+            minHeight: 'calc(100vh - 52px)',
+            background: color.canvas,
           }}
         >
-          <div className="page-transition">
+          <div
+            className="page-transition"
+            style={{ maxWidth: 1360, margin: '0 auto', minWidth: 0 }}
+          >
             <Outlet />
           </div>
         </Content>

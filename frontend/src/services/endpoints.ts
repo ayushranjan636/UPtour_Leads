@@ -26,6 +26,12 @@ export const contactsAPI = {
     api.patch(`/contacts/${id}`, data),
   optOut: (id: string) => api.post(`/contacts/${id}/opt-out`),
   verifyWhatsApp: (id: string) => api.post(`/contacts/${id}/verify-whatsapp`),
+  /**
+   * Permanently deletes the contact and its campaign/message/lead history.
+   * Irreversible — always confirm first. Use `optOut` to stop messaging while
+   * keeping the record.
+   */
+  remove: (id: string) => api.delete(`/contacts/${id}`),
 };
 
 /* ── Companies ────────────────────────────────────── */
@@ -161,8 +167,24 @@ export const engineAPI = {
   }) => api.get('/engine/distribution-plan', { params }),
 };
 
-/* ── WhatsApp ─────────────────────────────────────── */
-export const whatsappAPI = {
-  getSessions: () => api.get('/whatsapp/sessions'),
+/* ── Messaging gateway (infrastructure) ───────────────
+ * The WhatsApp gateway is deliberately treated as opaque infrastructure here.
+ * Session management, QR pairing and per-session admin live in the gateway's own
+ * dashboard, NOT in this portal — so only a health probe is exposed.
+ */
+export const gatewayAPI = {
   getHealth: () => api.get('/whatsapp/health'),
 };
+
+/**
+ * True when the messaging gateway is usable for sending.
+ *
+ * The gateway reports readiness as `{"status":"ok"}`. An earlier check compared
+ * against 'connected'/'healthy', neither of which it ever returns, so the portal
+ * always displayed the gateway as down even while it was sending fine. Accept the
+ * real value plus the historical aliases in case the upstream shape changes.
+ */
+export function isGatewayHealthy(health: { status?: string } | null | undefined): boolean {
+  const status = health?.status?.toLowerCase();
+  return status === 'ok' || status === 'up' || status === 'connected' || status === 'healthy';
+}

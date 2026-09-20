@@ -82,6 +82,18 @@ export abstract class BaseService<T extends { id: string }> {
     this.cache.delete(id);
   }
 
+  /**
+   * Drop a cached entity so the next read hits the database.
+   *
+   * Subclasses that delete or mutate rows with their own SQL (rather than through
+   * `update`/`remove` above) must call this, otherwise `findById` keeps serving the
+   * stale cached copy for up to CACHE_TTL — which for a deleted row means it
+   * appears to still exist.
+   */
+  protected invalidate(id: string): void {
+    this.cache.delete(id);
+  }
+
   async count(where?: FindOptionsWhere<T>): Promise<number> {
     return this.repo.count({ where });
   }

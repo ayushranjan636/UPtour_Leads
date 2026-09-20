@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Row, Col, Card, Table, Typography, Progress, Flex, Spin, Empty } from 'antd';
+import { Row, Col, Card, Table, Typography, Progress, Flex, Spin, Empty, Badge, Tooltip } from 'antd';
 import {
   ContactsOutlined,
   SendOutlined,
@@ -10,7 +10,8 @@ import {
 } from '@ant-design/icons';
 import StatCard from '../components/StatCard';
 import PageHeader from '../components/PageHeader';
-import { dashboardAPI } from '../services/endpoints';
+import { dashboardAPI, gatewayAPI, isGatewayHealthy } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -45,20 +46,21 @@ interface PipelineEntry {
 }
 
 const pipelineColors: Record<string, string> = {
-  new: '#6366F1',
-  contacted: '#06B6D4',
-  interested: '#06B6D4',
-  qualified: '#10B981',
-  proposal_sent: '#8B5CF6',
-  negotiation: '#F59E0B',
-  won: '#10B981',
-  lost: '#EF4444',
+  new: color.accent,
+  contacted: color.info,
+  interested: color.info,
+  qualified: color.success,
+  proposal_sent: color.accent,
+  negotiation: color.warning,
+  won: color.success,
+  lost: color.danger,
 };
 
 export default function Dashboard() {
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [pipeline, setPipeline] = useState<PipelineEntry[]>([]);
+  const [gatewayUp, setGatewayUp] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -80,6 +82,26 @@ export default function Dashboard() {
       }
     };
     load();
+  }, []);
+
+  // Gateway health is fetched separately so a gateway outage never blocks or
+  // blanks the business metrics above — they come from our own database.
+  useEffect(() => {
+    let cancelled = false;
+    const probe = async () => {
+      try {
+        const { data } = await gatewayAPI.getHealth();
+        if (!cancelled) setGatewayUp(isGatewayHealthy(data));
+      } catch {
+        if (!cancelled) setGatewayUp(false);
+      }
+    };
+    probe();
+    const timer = setInterval(probe, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, []);
 
   if (loading) {
@@ -106,41 +128,41 @@ export default function Dashboard() {
       title: 'Total Contacts',
       value: ov?.totalContacts?.toLocaleString() ?? '0',
       subtitle: `${ov?.validContacts ?? 0} verified`,
-      accent: '#4F46E5',
+      accent: color.accent,
     },
     {
       icon: <SendOutlined />,
       title: 'Messages Sent',
       value: ov?.messagesSent?.toLocaleString() ?? '0',
-      accent: '#6366F1',
+      accent: color.accent,
     },
     {
       icon: <CheckCircleOutlined />,
       title: 'Delivered Rate',
       value: `${deliveryPct}%`,
       subtitle: `${ov?.messagesDelivered?.toLocaleString() ?? 0} delivered`,
-      accent: '#10B981',
+      accent: color.success,
     },
     {
       icon: <MessageOutlined />,
       title: 'Response Rate',
       value: `${responsePct}%`,
       subtitle: `${ov?.responses ?? 0} responses`,
-      accent: '#06B6D4',
+      accent: color.info,
     },
     {
       icon: <FunnelPlotOutlined />,
       title: 'Active Leads',
       value: ov?.totalLeads?.toLocaleString() ?? '0',
       subtitle: `${ov?.activeCampaigns ?? 0} campaigns`,
-      accent: '#F59E0B',
+      accent: color.warning,
     },
     {
       icon: <TrophyOutlined />,
       title: 'Total Deals',
       value: ov?.totalDeals?.toLocaleString() ?? '0',
       subtitle: `${ov?.conversionRate ?? 0}% conversion`,
-      accent: '#10B981',
+      accent: color.success,
     },
   ];
 
@@ -180,7 +202,7 @@ export default function Dashboard() {
       dataIndex: 'stats_leads',
       key: 'stats_leads',
       render: (v: number) => (
-        <Text strong style={{ color: '#4F46E5' }}>
+        <Text strong style={{ color: color.accent }}>
           {v ?? 0}
         </Text>
       ),
@@ -191,10 +213,36 @@ export default function Dashboard() {
 
   return (
     <div>
-      <PageHeader
-        title="Dashboard"
-        subtitle="Welcome back — here's what's happening today"
-      />
+      <Flex justify="space-between" align="flex-start" wrap gap={space.md}>
+        <PageHeader
+          title="Dashboard"
+          subtitle="Welcome back — here's what's happening today"
+        />
+        {gatewayUp !== null && (
+          <Tooltip
+            title={
+              gatewayUp
+                ? 'Outbound messaging is available.'
+                : 'Messaging is unavailable — campaigns cannot send until it recovers.'
+            }
+          >
+            <Badge
+              status={gatewayUp ? 'success' : 'error'}
+              text={
+                <Text
+                  style={{
+                    fontSize: font.size.footnote,
+                    color: gatewayUp ? color.success : color.danger,
+                  }}
+                >
+                  {gatewayUp ? 'Messaging active' : 'Messaging unavailable'}
+                </Text>
+              }
+              style={{ marginTop: 6 }}
+            />
+          </Tooltip>
+        )}
+      </Flex>
 
       <Row gutter={[20, 20]} style={{ marginBottom: 28 }}>
         {stats.map((s) => (
@@ -214,18 +262,18 @@ export default function Dashboard() {
         <Col xs={24} xl={16}>
           <Card
             title={
-              <Text strong style={{ fontSize: 16, color: '#111827' }}>
+              <Text strong style={{ fontSize: font.size.headline, color: color.text }}>
                 Campaign Performance
               </Text>
             }
             style={{
-              borderRadius: 14,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+              borderRadius: radius.xl,
+              border: `1px solid ${color.separator}`,
             }}
             styles={{ body: { padding: 0 } }}
           >
             {campaigns.length === 0 ? (
-              <div style={{ padding: 48 }}>
+              <div style={{ padding: space.xxxl }}>
                 <Empty description="No campaigns yet. Create your first campaign to see performance data." />
               </div>
             ) : (
@@ -235,8 +283,11 @@ export default function Dashboard() {
                 rowKey="id"
                 pagination={false}
                 size="middle"
+                // Without this the Sent/Delivered/Read/Replied/Leads columns run past
+                // a narrow viewport with no way to reach them.
+                scroll={{ x: 'max-content' }}
                 style={{
-                  borderRadius: '0 0 14px 14px',
+                  borderRadius: `0 0 ${radius.xl}px ${radius.xl}px`,
                   overflow: 'hidden',
                 }}
               />
@@ -247,22 +298,22 @@ export default function Dashboard() {
         <Col xs={24} xl={8}>
           <Card
             title={
-              <Text strong style={{ fontSize: 16, color: '#111827' }}>
+              <Text strong style={{ fontSize: font.size.headline, color: color.text }}>
                 Lead Pipeline
               </Text>
             }
             style={{
-              borderRadius: 14,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+              borderRadius: radius.xl,
+              border: `1px solid ${color.separator}`,
             }}
           >
             {pipeline.length === 0 ? (
               <Empty description="No leads in the pipeline yet." />
             ) : (
-              <Flex vertical gap={16}>
+              <Flex vertical gap={space.lg}>
                 {pipeline.map((s) => {
-                  const color =
-                    pipelineColors[s.status?.toLowerCase().replace(/[\s-]/g, '_')] ?? '#6366F1';
+                  const barColor =
+                    pipelineColors[s.status?.toLowerCase().replace(/[\s-]/g, '_')] ?? color.accent;
                   const label = (s.status ?? 'Unknown')
                     .replace(/_/g, ' ')
                     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -274,16 +325,16 @@ export default function Dashboard() {
                       >
                         <Text
                           style={{
-                            fontSize: 13,
-                            color: '#374151',
-                            fontWeight: 500,
+                            fontSize: font.size.footnote,
+                            color: color.textSecondary,
+                            fontWeight: font.weight.medium,
                           }}
                         >
                           {label}
                         </Text>
                         <Text
                           strong
-                          style={{ fontSize: 13, color: '#111827' }}
+                          style={{ fontSize: font.size.footnote, color: color.text }}
                         >
                           {s.count}
                         </Text>
@@ -291,8 +342,8 @@ export default function Dashboard() {
                       <Progress
                         percent={(s.count / maxPipelineCount) * 100}
                         showInfo={false}
-                        strokeColor={color}
-                        trailColor="#F3F4F6"
+                        strokeColor={barColor}
+                        trailColor={color.fill}
                         size={['100%', 10]}
                         style={{ marginBottom: 0 }}
                       />

@@ -18,6 +18,7 @@ import {
 import PageHeader from '../components/PageHeader';
 import StatusTag from '../components/StatusTag';
 import { leadsAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -99,7 +100,9 @@ export default function Leads() {
             {record.contact?.name ?? record.contact_name ?? '—'}
           </Text>
           {record.contact?.email && (
-            <Text style={{ fontSize: 12, color: '#6B7280' }}>{record.contact.email}</Text>
+            <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+              {record.contact.email}
+            </Text>
           )}
         </div>
       ),
@@ -132,11 +135,16 @@ export default function Leads() {
       width: 80,
       render: (s: number) =>
         s != null ? (
-          <Text strong style={{ color: s >= 80 ? '#10B981' : s >= 60 ? '#F59E0B' : '#EF4444' }}>
+          <Text
+            strong
+            style={{
+              color: s >= 80 ? color.success : s >= 60 ? color.warning : color.danger,
+            }}
+          >
             {s}
           </Text>
         ) : (
-          <Text style={{ color: '#D1D5DB' }}>—</Text>
+          <Text style={{ color: color.textTertiary }}>—</Text>
         ),
     },
     {
@@ -145,7 +153,7 @@ export default function Leads() {
       key: 'created_at',
       render: (d: string) =>
         d ? (
-          <Text style={{ fontSize: 13, color: '#6B7280' }}>
+          <Text style={{ fontSize: font.size.footnote, color: color.textSecondary }}>
             {new Date(d).toLocaleDateString()}
           </Text>
         ) : (
@@ -160,13 +168,21 @@ export default function Leads() {
         <PageHeader title="Leads" subtitle="0 leads" />
         <Flex justify="center" style={{ padding: '80px 0' }}>
           <Empty
-            image={<FunnelPlotOutlined style={{ fontSize: 64, color: '#D1D5DB' }} />}
+            image={<FunnelPlotOutlined style={{ fontSize: 48, color: color.textTertiary }} />}
             description={
-              <div style={{ marginTop: 16 }}>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 8 }}>
+              <div style={{ marginTop: space.lg }}>
+                <Text
+                  strong
+                  style={{
+                    fontSize: font.size.headline,
+                    display: 'block',
+                    marginBottom: space.sm,
+                    color: color.text,
+                  }}
+                >
                   No leads yet
                 </Text>
-                <Text style={{ color: '#6B7280' }}>
+                <Text style={{ color: color.textSecondary }}>
                   Leads will appear here as contacts respond to your campaigns.
                 </Text>
               </div>
@@ -184,10 +200,10 @@ export default function Leads() {
         subtitle={`${total} leads`}
       />
 
-      <Flex gap={12} style={{ marginBottom: 20 }}>
+      <Flex gap={space.md} style={{ marginBottom: space.xl }}>
         <Input
           placeholder="Search leads..."
-          prefix={<SearchOutlined style={{ color: '#9CA3AF' }} />}
+          prefix={<SearchOutlined style={{ color: color.textTertiary }} />}
           style={{ maxWidth: 320 }}
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
@@ -208,6 +224,8 @@ export default function Leads() {
           dataSource={data}
           columns={columns}
           rowKey="id"
+          // Keeps every column reachable instead of clipping on narrow viewports.
+          scroll={{ x: 'max-content' }}
           pagination={{
             current: page,
             pageSize,
@@ -221,10 +239,10 @@ export default function Leads() {
             style: { cursor: 'pointer' },
           })}
           style={{
-            background: '#FFF',
-            borderRadius: 14,
+            background: color.surface,
+            borderRadius: radius.xl,
             overflow: 'hidden',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            border: `1px solid ${color.separator}`,
           }}
         />
       </Spin>
@@ -236,7 +254,7 @@ export default function Leads() {
         width={440}
       >
         {selected && (
-          <Flex vertical gap={20}>
+          <Flex vertical gap={space.xl}>
             <Descriptions column={1} size="small" bordered>
               <Descriptions.Item label="Contact">
                 {selected.contact?.name ?? selected.contact_name ?? '—'}

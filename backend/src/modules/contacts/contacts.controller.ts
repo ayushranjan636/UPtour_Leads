@@ -1,4 +1,16 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { ContactsService } from './contacts.service';
 import { CreateContactDto } from './dto/create-contact.dto';
@@ -48,5 +60,18 @@ export class ContactsController {
   @ApiOperation({ summary: 'Verify WhatsApp' })
   verifyWhatsApp(@Param('id', ParseUUIDPipe) id: string) {
     return this.svc.verifyWhatsApp(id);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Permanently delete a contact',
+    description:
+      'Removes the contact along with its campaign memberships, messages, AI analyses, ' +
+      'leads and deals. Data-collection results are kept but unlinked. This cannot be undone — ' +
+      'use opt-out instead to stop messaging while retaining history.',
+  })
+  remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.deleteContact(id);
   }
 }

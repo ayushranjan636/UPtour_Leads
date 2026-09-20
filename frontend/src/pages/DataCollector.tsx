@@ -26,6 +26,7 @@ import {
 import PageHeader from '../components/PageHeader';
 import StatusTag from '../components/StatusTag';
 import { collectionAPI, campaignsAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -180,13 +181,21 @@ export default function DataCollector() {
         <PageHeader title="Data Collector" subtitle="Automated business contact discovery" />
         <Flex justify="center" style={{ padding: '80px 0' }}>
           <Empty
-            image={<CloudDownloadOutlined style={{ fontSize: 64, color: '#D1D5DB' }} />}
+            image={<CloudDownloadOutlined style={{ fontSize: 48, color: color.textTertiary }} />}
             description={
-              <div style={{ marginTop: 16 }}>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 8 }}>
+              <div style={{ marginTop: space.lg }}>
+                <Text
+                  strong
+                  style={{
+                    fontSize: font.size.headline,
+                    display: 'block',
+                    marginBottom: space.sm,
+                    color: color.text,
+                  }}
+                >
                   No collection jobs yet
                 </Text>
-                <Text style={{ color: '#6B7280' }}>
+                <Text style={{ color: color.textSecondary }}>
                   Create a job to automatically discover business contacts in your target markets.
                 </Text>
               </div>
@@ -226,12 +235,12 @@ export default function DataCollector() {
           showIcon
           message="Google Maps data source not configured"
           description={sourceMessage}
-          style={{ marginBottom: 20, borderRadius: 10 }}
+          style={{ marginBottom: space.xl, borderRadius: radius.lg }}
         />
       )}
 
       <Spin spinning={loadingJobs}>
-        <Row gutter={[20, 20]} style={{ marginBottom: 28 }}>
+        <Row gutter={[space.xl, space.xl]} style={{ marginBottom: 28 }}>
           {jobs.map((job) => {
             const collected = job.total_collected ?? 0;
             const limit = job.daily_limit ?? 0;
@@ -242,21 +251,32 @@ export default function DataCollector() {
                   hoverable
                   onClick={() => setSelectedJob(job)}
                   style={{
-                    borderRadius: 14,
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-                    border: selectedJob?.id === job.id ? '2px solid #4F46E5' : undefined,
+                    borderRadius: radius.xl,
+                    border:
+                      selectedJob?.id === job.id
+                        ? `2px solid ${color.accent}`
+                        : `1px solid ${color.separator}`,
                   }}
-                  styles={{ body: { padding: 20 } }}
+                  styles={{ body: { padding: space.xl } }}
                 >
-                  <Flex justify="space-between" align="flex-start" style={{ marginBottom: 12 }}>
+                  <Flex justify="space-between" align="flex-start" style={{ marginBottom: space.md }}>
                     <div>
-                      <Text strong style={{ fontSize: 15, display: 'block', color: '#111827' }}>
+                      <Text
+                        strong
+                        style={{
+                          fontSize: font.size.callout,
+                          display: 'block',
+                          color: color.text,
+                        }}
+                      >
                         {job.name}
                       </Text>
                       {(job.city || job.country) && (
-                        <Flex align="center" gap={4} style={{ marginTop: 4 }}>
-                          <GlobalOutlined style={{ fontSize: 12, color: '#9CA3AF' }} />
-                          <Text style={{ fontSize: 12, color: '#6B7280' }}>
+                        <Flex align="center" gap={space.xs} style={{ marginTop: space.xs }}>
+                          <GlobalOutlined
+                            style={{ fontSize: font.size.caption, color: color.textTertiary }}
+                          />
+                          <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
                             {[job.city, job.country].filter(Boolean).join(', ')}
                           </Text>
                         </Flex>
@@ -265,15 +285,28 @@ export default function DataCollector() {
                     {job.status && <StatusTag status={job.status} />}
                   </Flex>
 
-                  <Text style={{ fontSize: 12, color: '#9CA3AF', display: 'block', marginBottom: 12 }}>
+                  <Text
+                    style={{
+                      fontSize: font.size.caption,
+                      color: color.textTertiary,
+                      display: 'block',
+                      marginBottom: space.md,
+                    }}
+                  >
                     {job.category ?? 'General'} · Limit: {limit || '—'}/day
                   </Text>
 
-                  <Flex justify="space-between" style={{ marginBottom: 12 }}>
-                    <Text style={{ fontSize: 12, color: '#6B7280' }}>
+                  <Flex justify="space-between" style={{ marginBottom: space.md }}>
+                    <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
                       Total collected
                     </Text>
-                    <Text style={{ fontSize: 12, fontWeight: 600, color: '#111827' }}>
+                    <Text
+                      style={{
+                        fontSize: font.size.caption,
+                        fontWeight: font.weight.semibold,
+                        color: color.text,
+                      }}
+                    >
                       {collected}
                     </Text>
                   </Flex>
@@ -298,13 +331,17 @@ export default function DataCollector() {
 
       {selectedJob && (
         <Card
-          title={<Text strong style={{ fontSize: 16, color: '#111827' }}>Results: {selectedJob.name}</Text>}
-          style={{ borderRadius: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}
+          title={
+            <Text strong style={{ fontSize: font.size.headline, color: color.text }}>
+              Results: {selectedJob.name}
+            </Text>
+          }
+          style={{ borderRadius: radius.xl, border: `1px solid ${color.separator}` }}
           styles={{ body: { padding: 0 } }}
         >
           <Spin spinning={loadingResults}>
             {results.length === 0 ? (
-              <div style={{ padding: 48 }}>
+              <div style={{ padding: space.xxxl }}>
                 <Empty description="No results yet. Run the job to start collecting data." />
               </div>
             ) : (
@@ -312,6 +349,8 @@ export default function DataCollector() {
                 dataSource={results}
                 columns={resultColumns}
                 rowKey="id"
+                // Keeps every column reachable instead of clipping on narrow viewports.
+                scroll={{ x: 'max-content' }}
                 pagination={{
                   current: resultsPage,
                   pageSize: 20,
@@ -372,7 +411,7 @@ function CreateJobModal({
         <Form.Item name="name" label="Job Name" rules={[{ required: true }]}>
           <Input placeholder="e.g. Japan Tour Agencies" />
         </Form.Item>
-        <Row gutter={12}>
+        <Row gutter={space.md}>
           <Col span={12}>
             <Form.Item name="country" label="Country" rules={[{ required: true }]}>
               <Input placeholder="e.g. Japan" />

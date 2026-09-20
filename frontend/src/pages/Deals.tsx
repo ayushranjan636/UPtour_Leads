@@ -22,6 +22,7 @@ import {
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
 import { dealsAPI, leadsAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -156,9 +157,9 @@ export default function Deals() {
       key: 'estimated_value',
       sorter: (a: Deal, b: Deal) => (a.estimated_value ?? 0) - (b.estimated_value ?? 0),
       render: (v: number) => (
-        <Flex align="center" gap={4}>
-          <DollarOutlined style={{ color: '#10B981', fontSize: 13 }} />
-          <Text strong style={{ color: '#111827' }}>{formatCurrency(v)}</Text>
+        <Flex align="center" gap={space.xs}>
+          <DollarOutlined style={{ color: color.success, fontSize: font.size.footnote }} />
+          <Text strong style={{ color: color.text }}>{formatCurrency(v)}</Text>
         </Flex>
       ),
     },
@@ -184,11 +185,11 @@ export default function Deals() {
       key: 'expected_close_date',
       render: (d: string) =>
         d ? (
-          <Text style={{ fontSize: 13, color: '#6B7280' }}>
+          <Text style={{ fontSize: font.size.footnote, color: color.textSecondary }}>
             {new Date(d).toLocaleDateString()}
           </Text>
         ) : (
-          <Text style={{ color: '#D1D5DB' }}>—</Text>
+          <Text style={{ color: color.textTertiary }}>—</Text>
         ),
     },
     {
@@ -209,13 +210,21 @@ export default function Deals() {
         <PageHeader title="Deals" subtitle="0 deals" />
         <Flex justify="center" style={{ padding: '80px 0' }}>
           <Empty
-            image={<DollarOutlined style={{ fontSize: 64, color: '#D1D5DB' }} />}
+            image={<DollarOutlined style={{ fontSize: 48, color: color.textTertiary }} />}
             description={
-              <div style={{ marginTop: 16 }}>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 8 }}>
+              <div style={{ marginTop: space.lg }}>
+                <Text
+                  strong
+                  style={{
+                    fontSize: font.size.headline,
+                    display: 'block',
+                    marginBottom: space.sm,
+                    color: color.text,
+                  }}
+                >
                   No deals yet
                 </Text>
-                <Text style={{ color: '#6B7280' }}>
+                <Text style={{ color: color.textSecondary }}>
                   Create a deal from a qualified lead to start tracking revenue.
                 </Text>
               </div>
@@ -255,6 +264,8 @@ export default function Deals() {
           dataSource={data}
           columns={columns}
           rowKey="id"
+          // Keeps every column reachable instead of clipping on narrow viewports.
+          scroll={{ x: 'max-content' }}
           pagination={{
             current: page,
             pageSize,
@@ -264,10 +275,10 @@ export default function Deals() {
             onChange: (p, ps) => { setPage(p); setPageSize(ps); },
           }}
           style={{
-            background: '#FFF',
-            borderRadius: 14,
+            background: color.surface,
+            borderRadius: radius.xl,
             overflow: 'hidden',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            border: `1px solid ${color.separator}`,
           }}
         />
       </Spin>
@@ -323,7 +334,7 @@ function DealModal({
         <Form.Item name="name" label="Deal Name" rules={[{ required: true, message: 'Enter a deal name' }]}>
           <Input placeholder="e.g. Sakura Travel — Golden Triangle" />
         </Form.Item>
-        <Flex gap={12}>
+        <Flex gap={space.md}>
           <Form.Item name="estimated_value" label="Estimated Value (₹)" style={{ flex: 1 }}>
             <InputNumber min={0} style={{ width: '100%' }} placeholder="500000" />
           </Form.Item>

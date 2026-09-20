@@ -20,6 +20,7 @@ import {
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
 import { companiesAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -121,24 +122,24 @@ export default function Companies() {
       dataIndex: 'name',
       key: 'name',
       render: (name: string, record: Company) => (
-        <Flex align="center" gap={10}>
+        <Flex align="center" gap={space.md}>
           <div
             style={{
               width: 36,
               height: 36,
-              borderRadius: 10,
-              background: '#EEF2FF',
+              borderRadius: radius.lg,
+              background: color.accentSoft,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
             }}
           >
-            <BankOutlined style={{ color: '#4F46E5' }} />
+            <BankOutlined style={{ color: color.accent }} />
           </div>
           <div>
             <Text strong style={{ display: 'block' }}>{name}</Text>
             {record.website && (
-              <Text style={{ fontSize: 12, color: '#6B7280' }}>{record.website}</Text>
+              <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>{record.website}</Text>
             )}
           </div>
         </Flex>
@@ -151,18 +152,18 @@ export default function Companies() {
       render: (c: string) =>
         c ? (
           <Flex align="center" gap={6}>
-            <GlobalOutlined style={{ color: '#9CA3AF', fontSize: 13 }} />
+            <GlobalOutlined style={{ color: color.textTertiary, fontSize: font.size.footnote }} />
             {c}
           </Flex>
         ) : (
-          <Text style={{ color: '#D1D5DB' }}>—</Text>
+          <Text style={{ color: color.textTertiary }}>—</Text>
         ),
     },
     {
       title: 'City',
       dataIndex: 'city',
       key: 'city',
-      render: (c: string) => c || <Text style={{ color: '#D1D5DB' }}>—</Text>,
+      render: (c: string) => c || <Text style={{ color: color.textTertiary }}>—</Text>,
     },
     {
       title: 'Type',
@@ -173,19 +174,19 @@ export default function Companies() {
           <span
             style={{
               padding: '3px 10px',
-              borderRadius: 6,
+              borderRadius: radius.sm,
               background:
-                t === 'Inbound' ? '#ECFDF5' : t === 'Outbound' ? '#EEF2FF' : '#FEF3C7',
+                t === 'Inbound' ? color.successSoft : t === 'Outbound' ? color.accentSoft : color.warningSoft,
               color:
-                t === 'Inbound' ? '#059669' : t === 'Outbound' ? '#4F46E5' : '#D97706',
-              fontWeight: 500,
-              fontSize: 12,
+                t === 'Inbound' ? color.success : t === 'Outbound' ? color.accent : color.warning,
+              fontWeight: font.weight.medium,
+              fontSize: font.size.caption,
             }}
           >
             {t}
           </span>
         ) : (
-          <Text style={{ color: '#D1D5DB' }}>—</Text>
+          <Text style={{ color: color.textTertiary }}>—</Text>
         ),
     },
     {
@@ -206,13 +207,20 @@ export default function Companies() {
         <PageHeader title="Companies" subtitle="0 companies" />
         <Flex justify="center" style={{ padding: '80px 0' }}>
           <Empty
-            image={<BankOutlined style={{ fontSize: 64, color: '#D1D5DB' }} />}
+            image={<BankOutlined style={{ fontSize: 64, color: color.textTertiary }} />}
             description={
-              <div style={{ marginTop: 16 }}>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 8 }}>
+              <div style={{ marginTop: space.lg }}>
+                <Text
+                  strong
+                  style={{
+                    fontSize: font.size.headline,
+                    display: 'block',
+                    marginBottom: space.sm,
+                  }}
+                >
                   No companies yet
                 </Text>
-                <Text style={{ color: '#6B7280' }}>
+                <Text style={{ color: color.textSecondary }}>
                   Add your first company to organize contacts.
                 </Text>
               </div>
@@ -247,10 +255,10 @@ export default function Companies() {
         }
       />
 
-      <Flex gap={12} style={{ marginBottom: 20 }}>
+      <Flex gap={space.md} style={{ marginBottom: 20 }}>
         <Input
           placeholder="Search companies..."
-          prefix={<SearchOutlined style={{ color: '#9CA3AF' }} />}
+          prefix={<SearchOutlined style={{ color: color.textTertiary }} />}
           style={{ maxWidth: 320 }}
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
@@ -290,6 +298,8 @@ export default function Companies() {
           dataSource={data}
           columns={columns}
           rowKey="id"
+          // Keeps every column reachable instead of clipping on narrow viewports.
+          scroll={{ x: 'max-content' }}
           pagination={{
             current: page,
             pageSize,
@@ -299,10 +309,10 @@ export default function Companies() {
             onChange: (p, ps) => { setPage(p); setPageSize(ps); },
           }}
           style={{
-            background: '#FFF',
-            borderRadius: 14,
+            background: color.surface,
+            borderRadius: radius.xl,
             overflow: 'hidden',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            border: `1px solid ${color.separator}`,
           }}
         />
       </Spin>
@@ -344,11 +354,11 @@ function CompanyModal({
       okText={editing ? 'Save' : 'Create'}
       width={520}
     >
-      <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+      <Form form={form} layout="vertical" style={{ marginTop: space.lg }}>
         <Form.Item name="name" label="Company Name" rules={[{ required: true }]}>
           <Input placeholder="e.g. Sakura Travel Co." />
         </Form.Item>
-        <Flex gap={12}>
+        <Flex gap={space.md}>
           <Form.Item name="country" label="Country" style={{ flex: 1 }}>
             <Input placeholder="e.g. Japan" />
           </Form.Item>
@@ -370,7 +380,7 @@ function CompanyModal({
         <Form.Item name="website" label="Website">
           <Input placeholder="e.g. sakuratravel.jp" />
         </Form.Item>
-        <Flex gap={12}>
+        <Flex gap={space.md}>
           <Form.Item name="phone" label="Phone" style={{ flex: 1 }}>
             <Input placeholder="+81312345678" />
           </Form.Item>

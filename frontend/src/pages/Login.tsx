@@ -1,9 +1,8 @@
 import { useState } from 'react';
-import { Card, Form, Input, Button, Typography, Alert } from 'antd';
+import { Card, Form, Input, Button, Alert } from 'antd';
 import { MailOutlined, LockOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
-
-const { Text } = Typography;
+import { color, font, radius, space } from '../theme/tokens';
 
 export default function Login() {
   const { login } = useAuth();
@@ -17,7 +16,7 @@ export default function Login() {
       await login(values.email, values.password);
     } catch (err: unknown) {
       const e = err as { response?: { data?: { message?: string } } };
-      setError(e.response?.data?.message || 'Login failed. Please check your credentials.');
+      setError(e.response?.data?.message || 'That email and password did not match.');
     } finally {
       setLoading(false);
     }
@@ -25,37 +24,9 @@ export default function Login() {
 
   return (
     <Card
-      style={{
-        borderRadius: 16,
-        boxShadow: '0 8px 30px rgba(0, 0, 0, 0.06)',
-        border: '1px solid #F0F0F0',
-      }}
-      styles={{ body: { padding: '40px 36px 36px' } }}
+      style={{ borderRadius: radius.xxl, border: `1px solid ${color.separator}` }}
+      styles={{ body: { padding: `${space.xxl}px ${space.xl + 4}px ${space.xl + 4}px` } }}
     >
-      <Text
-        strong
-        style={{
-          fontSize: 20,
-          display: 'block',
-          textAlign: 'center',
-          marginBottom: 4,
-          color: '#111827',
-        }}
-      >
-        Welcome back
-      </Text>
-      <Text
-        style={{
-          display: 'block',
-          textAlign: 'center',
-          color: '#6B7280',
-          marginBottom: 32,
-          fontSize: 14,
-        }}
-      >
-        Sign in to UP Heritage Tours CRM
-      </Text>
-
       {error && (
         <Alert
           message={error}
@@ -63,7 +34,7 @@ export default function Login() {
           showIcon
           closable
           onClose={() => setError('')}
-          style={{ marginBottom: 20, borderRadius: 10 }}
+          style={{ marginBottom: space.lg, borderRadius: radius.lg }}
         />
       )}
 
@@ -76,43 +47,46 @@ export default function Login() {
       >
         <Form.Item
           name="email"
-          label={<Text style={{ fontWeight: 500, color: '#374151' }}>Email</Text>}
+          label="Email"
           rules={[
-            { required: true, message: 'Please enter your email' },
-            { type: 'email', message: 'Enter a valid email' },
+            { required: true, message: 'Enter your email' },
+            { type: 'email', message: 'Enter a valid email address' },
           ]}
         >
           <Input
-            prefix={<MailOutlined style={{ color: '#9CA3AF' }} />}
-            placeholder="admin@uptour.in"
+            prefix={<MailOutlined style={{ color: color.textTertiary }} />}
+            placeholder="you@example.com"
+            autoComplete="email"
+            // Focus starts in the first field so the keyboard path is immediate.
+            autoFocus
           />
         </Form.Item>
 
         <Form.Item
           name="password"
-          label={<Text style={{ fontWeight: 500, color: '#374151' }}>Password</Text>}
-          rules={[{ required: true, message: 'Please enter your password' }]}
+          label="Password"
+          rules={[{ required: true, message: 'Enter your password' }]}
         >
           <Input.Password
-            prefix={<LockOutlined style={{ color: '#9CA3AF' }} />}
-            placeholder="Enter your password"
+            prefix={<LockOutlined style={{ color: color.textTertiary }} />}
+            placeholder="Password"
+            autoComplete="current-password"
           />
         </Form.Item>
 
-        <Form.Item style={{ marginBottom: 0, marginTop: 8 }}>
+        <Form.Item style={{ marginBottom: 0, marginTop: space.xl }}>
+          {/* Flat accent fill. The gradient + coloured glow this replaces was the
+              loudest element on an otherwise calm screen. */}
           <Button
             type="primary"
             htmlType="submit"
             block
             loading={loading}
             style={{
-              height: 48,
-              borderRadius: 12,
-              fontWeight: 600,
-              fontSize: 15,
-              background: 'linear-gradient(135deg, #4F46E5 0%, #6366F1 100%)',
-              border: 'none',
-              boxShadow: '0 4px 14px rgba(79, 70, 229, 0.3)',
+              height: 44,
+              borderRadius: radius.lg,
+              fontWeight: font.weight.medium,
+              fontSize: font.size.callout,
             }}
           >
             Sign In

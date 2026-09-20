@@ -40,6 +40,7 @@ import {
   contactsAPI,
   engineAPI,
 } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -255,12 +256,12 @@ export default function CampaignDetail() {
   const conversion = stats.sent > 0 ? ((stats.leads / stats.sent) * 100).toFixed(1) : '0';
 
   const statCards = [
-    { icon: <SendOutlined />, title: 'Sent', value: stats.sent.toLocaleString(), accent: '#4F46E5' },
-    { icon: <CheckCircleOutlined />, title: 'Delivered', value: stats.delivered.toLocaleString(), accent: '#6366F1' },
-    { icon: <EyeOutlined />, title: 'Read', value: stats.read.toLocaleString(), accent: '#06B6D4' },
-    { icon: <MessageOutlined />, title: 'Replied', value: stats.replied.toLocaleString(), accent: '#10B981' },
-    { icon: <FunnelPlotOutlined />, title: 'Leads', value: stats.leads.toString(), accent: '#F59E0B' },
-    { icon: <PercentageOutlined />, title: 'Conversion', value: `${conversion}%`, accent: '#10B981' },
+    { icon: <SendOutlined />, title: 'Sent', value: stats.sent.toLocaleString(), accent: color.accent },
+    { icon: <CheckCircleOutlined />, title: 'Delivered', value: stats.delivered.toLocaleString(), accent: color.accent },
+    { icon: <EyeOutlined />, title: 'Read', value: stats.read.toLocaleString(), accent: color.info },
+    { icon: <MessageOutlined />, title: 'Replied', value: stats.replied.toLocaleString(), accent: color.success },
+    { icon: <FunnelPlotOutlined />, title: 'Leads', value: stats.leads.toString(), accent: color.warning },
+    { icon: <PercentageOutlined />, title: 'Conversion', value: `${conversion}%`, accent: color.success },
   ];
 
   const contactColumns = [
@@ -279,7 +280,7 @@ export default function CampaignDetail() {
       title: 'Email',
       dataIndex: 'email',
       key: 'email',
-      render: (e: string) => e || <Text style={{ color: '#D1D5DB' }}>—</Text>,
+      render: (e: string) => e || <Text style={{ color: color.textTertiary }}>—</Text>,
     },
   ];
 
@@ -289,7 +290,7 @@ export default function CampaignDetail() {
       label: `Contacts (${contactsTotal})`,
       children: (
         <div>
-          <Flex justify="flex-end" style={{ marginBottom: 16 }}>
+          <Flex justify="flex-end" style={{ marginBottom: space.lg }}>
             <Button type="primary" icon={<PlusOutlined />} onClick={openAddContacts}>
               Add Contacts
             </Button>
@@ -301,6 +302,8 @@ export default function CampaignDetail() {
               dataSource={contacts}
               columns={contactColumns}
               rowKey="id"
+              // Keeps every column reachable instead of clipping on narrow viewports.
+              scroll={{ x: 'max-content' }}
               pagination={{
                 current: contactsPage,
                 pageSize: 20,
@@ -340,9 +343,9 @@ export default function CampaignDetail() {
                         <Text strong>
                           Step {t.sequence_order}: {t.name}
                         </Text>
-                        <Flex gap={8}>
+                        <Flex gap={space.sm}>
                           {t.trigger_condition && (
-                            <Text style={{ fontSize: 12, color: '#6B7280' }}>
+                            <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
                               Trigger: {t.trigger_condition}
                             </Text>
                           )}
@@ -355,19 +358,19 @@ export default function CampaignDetail() {
                         </Flex>
                       </Flex>
                     }
-                    style={{ borderRadius: 10, marginBottom: 12 }}
+                    style={{ borderRadius: radius.lg, marginBottom: space.md }}
                   >
                     <TextArea
                       value={t.body}
                       readOnly
                       autoSize={{ minRows: 2 }}
-                      style={{ border: 'none', background: '#FAFBFC', borderRadius: 8 }}
+                      style={{ border: 'none', background: color.fill, borderRadius: radius.md }}
                     />
                   </Card>
                 ))}
               <Button
                 icon={<PlusOutlined />}
-                style={{ marginTop: 8 }}
+                style={{ marginTop: space.sm }}
                 onClick={() => { templateForm.resetFields(); setTemplateModalOpen(true); }}
               >
                 Add Step
@@ -381,30 +384,51 @@ export default function CampaignDetail() {
       key: 'distribution',
       label: 'Distribution Plan',
       children: (
-        <Card style={{ borderRadius: 14 }}>
+        <Card style={{ borderRadius: radius.xl }}>
           {distPlan.length === 0 ? (
             <Empty description="Configure send window and daily limit to see the distribution plan." />
           ) : (
-            <Flex vertical gap={8}>
+            <Flex vertical gap={space.sm}>
               {distPlan.map((slot, i) => (
-                <Flex key={i} align="center" gap={16}>
-                  <Text style={{ width: 60, fontSize: 13, fontWeight: 500, color: '#374151' }}>
+                <Flex key={i} align="center" gap={space.lg}>
+                  <Text
+                    style={{
+                      width: 60,
+                      fontSize: font.size.footnote,
+                      fontWeight: font.weight.medium,
+                      color: color.textSecondary,
+                    }}
+                  >
                     {slot.time}
                   </Text>
-                  <div style={{ flex: 1, background: '#F3F4F6', borderRadius: 6, height: 24, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      flex: 1,
+                      background: color.fill,
+                      borderRadius: radius.sm,
+                      height: 24,
+                      overflow: 'hidden',
+                    }}
+                  >
                     <div
                       style={{
                         width: `${Math.min((slot.count / Math.max(...distPlan.map((s) => s.count), 1)) * 100, 100)}%`,
                         height: '100%',
-                        background: 'linear-gradient(90deg, #4F46E5, #6366F1)',
-                        borderRadius: 6,
+                        background: color.accent,
+                        borderRadius: radius.sm,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'flex-end',
-                        paddingRight: 8,
+                        paddingRight: space.sm,
                       }}
                     >
-                      <Text style={{ color: '#FFF', fontSize: 11, fontWeight: 600 }}>
+                      <Text
+                        style={{
+                          color: color.textOnAccent,
+                          fontSize: font.size.caption,
+                          fontWeight: font.weight.semibold,
+                        }}
+                      >
                         {slot.count}
                       </Text>
                     </div>
@@ -439,7 +463,7 @@ export default function CampaignDetail() {
         }
       />
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+      <Row gutter={[16, 16]} style={{ marginBottom: space.xl }}>
         {statCards.map((s) => (
           <Col xs={12} sm={8} lg={4} key={s.title}>
             <StatCard icon={s.icon} title={s.title} value={s.value} accentColor={s.accent} />
@@ -447,7 +471,7 @@ export default function CampaignDetail() {
         ))}
       </Row>
 
-      <Card style={{ borderRadius: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
+      <Card style={{ borderRadius: radius.xl, border: `1px solid ${color.separator}` }}>
         <Tabs items={tabItems} />
       </Card>
 
@@ -463,7 +487,7 @@ export default function CampaignDetail() {
         <Select
           mode="multiple"
           placeholder="Search and select contacts..."
-          style={{ width: '100%', marginTop: 16 }}
+          style={{ width: '100%', marginTop: space.lg }}
           value={selectedContactIds}
           onChange={setSelectedContactIds}
           filterOption={(input, option) =>
@@ -485,14 +509,14 @@ export default function CampaignDetail() {
         okText="Create Template"
         width={520}
       >
-        <Form form={templateForm} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={templateForm} layout="vertical" style={{ marginTop: space.lg }}>
           <Form.Item name="name" label="Template Name" rules={[{ required: true }]}>
             <Input placeholder="e.g. Initial Outreach" />
           </Form.Item>
           <Form.Item name="body" label="Message Body" rules={[{ required: true }]}>
             <TextArea rows={4} placeholder="Hello {{name}}, ..." />
           </Form.Item>
-          <Flex gap={12}>
+          <Flex gap={space.md}>
             <Form.Item name="sequence_order" label="Sequence Order" style={{ flex: 1 }} rules={[{ required: true }]}>
               <InputNumber min={1} placeholder="1" style={{ width: '100%' }} />
             </Form.Item>

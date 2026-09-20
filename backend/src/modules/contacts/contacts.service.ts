@@ -95,6 +95,65 @@ export class ContactsService extends BaseService<Contact> {
     return this.repo.save(contact);
   }
 
+  /**
+   * Permanently delete a contact and the history that belongs to it.
+   *
+   * None of the five tables referencing `contacts` declare ON DELETE CASCADE, so a
+   * plain repository delete raises a foreign-key violation for any contact that has
+   * ever been messaged, campaigned, or scraped. Dependents are therefore removed
+   * explicitly, innermost-first, inside one transaction so a failure part-way
+   * through cannot leave the contact half-deleted.
+   *
+   * `collection_results` is deliberately NOT deleted: it is the raw
+   * data-collection audit trail and its `contact_id` is nullable, so the row is
+   * detached instead. Deleting a contact must not rewrite what a scrape returned.
+   */
+  async deleteContact(id: string): Promise<{ id: string; deleted: true }> {
+    // 404s before opening a transaction if the contact does not exist.
+    await this.findById(id);
+
+    await this.repo.manager.transaction(async (tx) => {
+      const campaignContactIds = (
+        await tx.query('SELECT id FROM campaign_contacts WHERE contact_id = $1', [id])
+      ).map((r: { id: string }) => r.id);
+
+      const leadIds = (
+        await tx.query('SELECT id FROM leads WHERE contact_id = $1', [id])
+      ).map((r: { id: string }) => r.id);
+
+      // deals -> leads
+      if (leadIds.length > 0) {
+        await tx.query('DELETE FROM deals WHERE lead_id = ANY($1::uuid[])', [leadIds]);
+      }
+
+      // ai_analyses refers to the contact, its messages AND its campaign_contacts,
+      // so it must go before messages and campaign_contacts.
+      await tx.query('DELETE FROM ai_analyses WHERE contact_id = $1', [id]);
+      if (campaignContactIds.length > 0) {
+        await tx.query('DELETE FROM ai_analyses WHERE campaign_contact_id = ANY($1::uuid[])', [
+          campaignContactIds,
+        ]);
+        await tx.query('DELETE FROM followup_jobs WHERE campaign_contact_id = ANY($1::uuid[])', [
+          campaignContactIds,
+        ]);
+      }
+
+      await tx.query('DELETE FROM leads WHERE contact_id = $1', [id]);
+      await tx.query('DELETE FROM messages WHERE contact_id = $1', [id]);
+      await tx.query('DELETE FROM campaign_contacts WHERE contact_id = $1', [id]);
+
+      // Preserve the scrape audit trail; just unlink it.
+      await tx.query('UPDATE collection_results SET contact_id = NULL WHERE contact_id = $1', [id]);
+
+      await tx.query('DELETE FROM contacts WHERE id = $1', [id]);
+    });
+
+    // BaseService caches reads by id; a stale entry would resurrect the contact.
+    this.invalidate(id);
+    this.logger.log(`Deleted contact ${id} and its campaign/message/lead history`);
+    return { id, deleted: true };
+  }
+
   async verifyWhatsApp(id: string): Promise<Contact> {
     const contact = await this.findById(id);
     contact.whatsapp_verified = true;

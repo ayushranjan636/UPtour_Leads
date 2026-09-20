@@ -30,6 +30,7 @@ import dayjs from 'dayjs';
 import PageHeader from '../components/PageHeader';
 import StatusTag from '../components/StatusTag';
 import { campaignsAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -137,13 +138,20 @@ export default function Campaigns() {
         <PageHeader title="Campaigns" subtitle="0 campaigns" />
         <Flex justify="center" style={{ padding: '80px 0' }}>
           <Empty
-            image={<RocketOutlined style={{ fontSize: 64, color: '#D1D5DB' }} />}
+            image={<RocketOutlined style={{ fontSize: 64, color: color.textTertiary }} />}
             description={
-              <div style={{ marginTop: 16 }}>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 8 }}>
+              <div style={{ marginTop: space.lg }}>
+                <Text
+                  strong
+                  style={{
+                    fontSize: font.size.headline,
+                    display: 'block',
+                    marginBottom: space.sm,
+                  }}
+                >
                   Launch your first campaign
                 </Text>
-                <Text style={{ color: '#6B7280' }}>
+                <Text style={{ color: color.textSecondary }}>
                   Create a WhatsApp outreach campaign to start engaging contacts.
                 </Text>
               </div>
@@ -192,20 +200,20 @@ export default function Campaigns() {
                   hoverable
                   onClick={() => navigate(`/campaigns/${campaign.id}`)}
                   style={{
-                    borderRadius: 14,
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                    borderRadius: radius.xl,
+                    border: `1px solid ${color.separator}`,
                     transition: 'all 0.2s ease',
                   }}
-                  styles={{ body: { padding: 24 } }}
+                  styles={{ body: { padding: space.xl } }}
                 >
-                  <Flex justify="space-between" align="flex-start" style={{ marginBottom: 16 }}>
+                  <Flex justify="space-between" align="flex-start" style={{ marginBottom: space.lg }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <Text
                         strong
                         style={{
-                          fontSize: 16,
+                          fontSize: font.size.headline,
                           display: 'block',
-                          color: '#111827',
+                          color: color.text,
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap',
@@ -214,12 +222,12 @@ export default function Campaigns() {
                         {campaign.name}
                       </Text>
                       {campaign.product && (
-                        <Text style={{ fontSize: 13, color: '#6B7280' }}>
+                        <Text style={{ fontSize: font.size.footnote, color: color.textSecondary }}>
                           {campaign.product}
                         </Text>
                       )}
                     </div>
-                    <Flex align="center" gap={8}>
+                    <Flex align="center" gap={space.sm}>
                       <StatusTag status={campaign.status} />
                       {campaign.status === 'active' ? (
                         <Button
@@ -239,7 +247,14 @@ export default function Campaigns() {
                   </Flex>
 
                   {campaign.target_country && (
-                    <Text style={{ fontSize: 12, color: '#9CA3AF', display: 'block', marginBottom: 16 }}>
+                    <Text
+                      style={{
+                        fontSize: font.size.caption,
+                        color: color.textTertiary,
+                        display: 'block',
+                        marginBottom: space.lg,
+                      }}
+                    >
                       Target: {campaign.target_country}
                     </Text>
                   )}
@@ -248,33 +263,33 @@ export default function Campaigns() {
                     <Progress
                       percent={deliveryRate}
                       size={['100%', 6]}
-                      strokeColor="#4F46E5"
-                      trailColor="#F3F4F6"
-                      style={{ marginBottom: 16 }}
+                      strokeColor={color.accent}
+                      trailColor={color.fill}
+                      style={{ marginBottom: space.lg }}
                       format={(p) => `${p}% delivered`}
                     />
                   )}
 
                   <Flex justify="space-between">
                     <Flex align="center" gap={6}>
-                      <SendOutlined style={{ fontSize: 13, color: '#6B7280' }} />
-                      <Text style={{ fontSize: 13 }}>
+                      <SendOutlined style={{ fontSize: font.size.footnote, color: color.textSecondary }} />
+                      <Text style={{ fontSize: font.size.footnote }}>
                         <Text strong>{sent.toLocaleString()}</Text>{' '}
-                        <Text style={{ color: '#9CA3AF' }}>sent</Text>
+                        <Text style={{ color: color.textTertiary }}>sent</Text>
                       </Text>
                     </Flex>
                     <Flex align="center" gap={6}>
-                      <UserOutlined style={{ fontSize: 13, color: '#6B7280' }} />
-                      <Text style={{ fontSize: 13 }}>
+                      <UserOutlined style={{ fontSize: font.size.footnote, color: color.textSecondary }} />
+                      <Text style={{ fontSize: font.size.footnote }}>
                         <Text strong>{replied.toLocaleString()}</Text>{' '}
-                        <Text style={{ color: '#9CA3AF' }}>replied</Text>
+                        <Text style={{ color: color.textTertiary }}>replied</Text>
                       </Text>
                     </Flex>
                     <Flex align="center" gap={6}>
-                      <FunnelPlotOutlined style={{ fontSize: 13, color: '#6B7280' }} />
-                      <Text style={{ fontSize: 13 }}>
-                        <Text strong style={{ color: '#4F46E5' }}>{leads}</Text>{' '}
-                        <Text style={{ color: '#9CA3AF' }}>leads</Text>
+                      <FunnelPlotOutlined style={{ fontSize: font.size.footnote, color: color.textSecondary }} />
+                      <Text style={{ fontSize: font.size.footnote }}>
+                        <Text strong style={{ color: color.accent }}>{leads}</Text>{' '}
+                        <Text style={{ color: color.textTertiary }}>leads</Text>
                       </Text>
                     </Flex>
                   </Flex>
@@ -286,7 +301,7 @@ export default function Campaigns() {
       </Spin>
 
       {total > 20 && (
-        <Flex justify="center" style={{ marginTop: 24 }}>
+        <Flex justify="center" style={{ marginTop: space.xl }}>
           <Button
             disabled={page * 20 >= total}
             onClick={() => setPage((p) => p + 1)}
@@ -330,7 +345,7 @@ function CampaignModal({
       okText="Create Campaign"
       width={520}
     >
-      <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+      <Form form={form} layout="vertical" style={{ marginTop: space.lg }}>
         <Form.Item name="name" label="Campaign Name" rules={[{ required: true }]}>
           <Input placeholder="e.g. Japan Golden Route 2026" />
         </Form.Item>
@@ -343,7 +358,7 @@ function CampaignModal({
         <Form.Item name="description" label="Description">
           <Input.TextArea rows={3} placeholder="Campaign description..." />
         </Form.Item>
-        <Flex gap={12}>
+        <Flex gap={space.md}>
           <Form.Item name="daily_send_limit" label="Daily Send Limit" style={{ flex: 1 }}>
             <InputNumber min={1} max={500} placeholder="100" style={{ width: '100%' }} />
           </Form.Item>

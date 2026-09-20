@@ -19,6 +19,7 @@ import {
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
 import { contactsAPI, messagesAPI } from '../services/endpoints';
+import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -132,13 +133,21 @@ export default function Conversations() {
         <PageHeader title="Conversations" subtitle="WhatsApp messaging" />
         <Flex justify="center" style={{ padding: '80px 0' }}>
           <Empty
-            image={<MessageOutlined style={{ fontSize: 64, color: '#D1D5DB' }} />}
+            image={<MessageOutlined style={{ fontSize: 64, color: color.textTertiary }} />}
             description={
-              <div style={{ marginTop: 16 }}>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 8 }}>
+              <div style={{ marginTop: space.lg }}>
+                <Text
+                  strong
+                  style={{
+                    fontSize: font.size.headline,
+                    display: 'block',
+                    marginBottom: space.sm,
+                    color: color.text,
+                  }}
+                >
                   No conversations yet
                 </Text>
-                <Text style={{ color: '#6B7280' }}>
+                <Text style={{ color: color.textSecondary }}>
                   Add contacts and start campaigns to begin conversations.
                 </Text>
               </div>
@@ -157,18 +166,17 @@ export default function Conversations() {
         style={{
           display: 'flex',
           height: 'calc(100vh - 180px)',
-          background: '#FFF',
-          borderRadius: 14,
+          background: color.surface,
+          borderRadius: radius.xl,
           overflow: 'hidden',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-          border: '1px solid #F0F0F0',
+          border: `1px solid ${color.separator}`,
         }}
       >
         {/* Left panel — contact list */}
         <div
           style={{
             width: 340,
-            borderRight: '1px solid #F0F0F0',
+            borderRight: `1px solid ${color.separator}`,
             display: 'flex',
             flexDirection: 'column',
           }}
@@ -176,21 +184,21 @@ export default function Conversations() {
           <div style={{ padding: '16px 16px 12px' }}>
             <Input
               placeholder="Search contacts..."
-              prefix={<SearchOutlined style={{ color: '#9CA3AF' }} />}
+              prefix={<SearchOutlined style={{ color: color.textTertiary }} />}
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
               allowClear
-              style={{ borderRadius: 10 }}
+              style={{ borderRadius: radius.lg }}
             />
           </div>
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {loadingContacts ? (
-              <Flex justify="center" style={{ padding: 24 }}>
+              <Flex justify="center" style={{ padding: space.xl }}>
                 <Spin />
               </Flex>
             ) : contacts.length === 0 ? (
-              <Flex justify="center" style={{ padding: 24 }}>
-                <Text style={{ color: '#9CA3AF' }}>No contacts found</Text>
+              <Flex justify="center" style={{ padding: space.xl }}>
+                <Text style={{ color: color.textTertiary }}>No contacts found</Text>
               </Flex>
             ) : (
               contacts.map((contact) => (
@@ -200,40 +208,50 @@ export default function Conversations() {
                   style={{
                     padding: '14px 16px',
                     cursor: 'pointer',
-                    background: selectedContact?.id === contact.id ? '#EEF2FF' : 'transparent',
-                    borderBottom: '1px solid #FAFAFA',
+                    background:
+                      selectedContact?.id === contact.id ? color.accentSoft : 'transparent',
+                    // Selection is signalled by the tint *and* the leading accent
+                    // bar, so it never relies on colour perception alone. The
+                    // transparent border keeps unselected rows aligned.
+                    borderLeft: `3px solid ${
+                      selectedContact?.id === contact.id ? color.accent : 'transparent'
+                    }`,
+                    borderBottom: `1px solid ${color.separator}`,
                     transition: 'background 0.15s',
                   }}
                 >
-                  <Flex gap={12} align="flex-start">
+                  <Flex gap={space.md} align="flex-start">
                     <Avatar
                       size={42}
                       style={{
-                        background:
-                          selectedContact?.id === contact.id
-                            ? 'linear-gradient(135deg, #4F46E5, #7C3AED)'
-                            : '#F3F4F6',
-                        color: selectedContact?.id === contact.id ? '#FFF' : '#6B7280',
-                        fontWeight: 600,
-                        fontSize: 14,
+                        background: color.accentSoft,
+                        color: color.accent,
+                        fontWeight: font.weight.semibold,
+                        fontSize: font.size.body,
                         flexShrink: 0,
                       }}
                     >
                       {contact.name?.charAt(0)?.toUpperCase() ?? '?'}
                     </Avatar>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <Text strong style={{ fontSize: 14, color: '#111827' }}>
+                      <Text strong style={{ fontSize: font.size.body, color: color.text }}>
                         {contact.name}
                       </Text>
                       {contact.company?.name && (
-                        <Text style={{ fontSize: 12, color: '#6B7280', display: 'block' }}>
+                        <Text
+                          style={{
+                            fontSize: font.size.caption,
+                            color: color.textSecondary,
+                            display: 'block',
+                          }}
+                        >
                           {contact.company.name}
                         </Text>
                       )}
                       <Text
                         style={{
-                          fontSize: 12,
-                          color: '#9CA3AF',
+                          fontSize: font.size.caption,
+                          color: color.textTertiary,
                           display: 'block',
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
@@ -256,7 +274,7 @@ export default function Conversations() {
             <Flex
               justify="center"
               align="center"
-              style={{ flex: 1, background: '#F9FAFB' }}
+              style={{ flex: 1, background: color.fill }}
             >
               <Empty description="Select a contact to start a conversation" />
             </Flex>
@@ -266,26 +284,27 @@ export default function Conversations() {
               <div
                 style={{
                   padding: '12px 20px',
-                  borderBottom: '1px solid #F0F0F0',
-                  background: '#FAFBFC',
+                  borderBottom: `1px solid ${color.separator}`,
+                  background: color.fill,
                 }}
               >
-                <Flex align="center" gap={12}>
+                <Flex align="center" gap={space.md}>
                   <Avatar
                     size={38}
                     style={{
-                      background: 'linear-gradient(135deg, #4F46E5, #7C3AED)',
-                      fontWeight: 600,
-                      fontSize: 14,
+                      background: color.accentSoft,
+                      color: color.accent,
+                      fontWeight: font.weight.semibold,
+                      fontSize: font.size.body,
                     }}
                   >
                     {selectedContact.name?.charAt(0)?.toUpperCase() ?? '?'}
                   </Avatar>
                   <div>
-                    <Text strong style={{ display: 'block', fontSize: 14 }}>
+                    <Text strong style={{ display: 'block', fontSize: font.size.body }}>
                       {selectedContact.name}
                     </Text>
-                    <Text style={{ fontSize: 12, color: '#6B7280' }}>
+                    <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
                       {selectedContact.whatsapp_number}
                     </Text>
                   </div>
@@ -298,7 +317,10 @@ export default function Conversations() {
                   flex: 1,
                   overflowY: 'auto',
                   padding: '20px 24px',
-                  background: '#F9FAFB',
+                  // The transcript sits on `surface` so incoming bubbles (which use
+                  // the quiet `fill` token) stay clearly distinguishable from the
+                  // pane behind them without needing a second grey.
+                  background: color.surface,
                 }}
               >
                 {loadingMessages ? (
@@ -321,43 +343,89 @@ export default function Conversations() {
                             <Card
                               size="small"
                               style={{
-                                borderRadius: 10,
-                                background: '#FEFCE8',
-                                border: '1px solid #FDE68A',
+                                borderRadius: radius.lg,
+                                background: color.warningSoft,
+                                border: `1px solid ${color.separator}`,
                                 maxWidth: 320,
                               }}
                               styles={{ body: { padding: '10px 14px' } }}
                             >
                               <Flex align="center" gap={6} style={{ marginBottom: 6 }}>
-                                <RobotOutlined style={{ color: '#D97706', fontSize: 13 }} />
-                                <Text style={{ fontSize: 11, color: '#92400E', fontWeight: 600 }}>
+                                <RobotOutlined
+                                  style={{ color: color.warning, fontSize: font.size.footnote }}
+                                />
+                                <Text
+                                  style={{
+                                    fontSize: font.size.caption,
+                                    color: color.warning,
+                                    fontWeight: font.weight.semibold,
+                                  }}
+                                >
                                   AI Analysis
                                 </Text>
                               </Flex>
                               {msg.ai_analysis.intent && (
-                                <Text style={{ fontSize: 12, display: 'block', color: '#78350F', marginBottom: 4 }}>
-                                  Intent: <Text strong style={{ color: '#92400E' }}>{msg.ai_analysis.intent}</Text>
+                                <Text
+                                  style={{
+                                    fontSize: font.size.caption,
+                                    display: 'block',
+                                    color: color.textSecondary,
+                                    marginBottom: space.xs,
+                                  }}
+                                >
+                                  Intent:{' '}
+                                  <Text strong style={{ color: color.text }}>
+                                    {msg.ai_analysis.intent}
+                                  </Text>
                                 </Text>
                               )}
                               {msg.ai_analysis.interest_level != null && (
-                                <Flex align="center" gap={8} style={{ marginBottom: 4 }}>
-                                  <Text style={{ fontSize: 11, color: '#92400E' }}>Interest</Text>
-                                  <Text strong style={{ fontSize: 11, color: '#92400E', textTransform: 'capitalize' }}>
+                                <Flex align="center" gap={space.sm} style={{ marginBottom: space.xs }}>
+                                  <Text
+                                    style={{
+                                      fontSize: font.size.caption,
+                                      color: color.textSecondary,
+                                    }}
+                                  >
+                                    Interest
+                                  </Text>
+                                  <Text
+                                    strong
+                                    style={{
+                                      fontSize: font.size.caption,
+                                      color: color.text,
+                                      textTransform: 'capitalize',
+                                    }}
+                                  >
                                     {msg.ai_analysis.interest_level}
                                   </Text>
                                 </Flex>
                               )}
                               {msg.ai_analysis.confidence != null && (
-                                <Flex align="center" gap={8}>
-                                  <Text style={{ fontSize: 11, color: '#92400E' }}>Confidence</Text>
+                                <Flex align="center" gap={space.sm}>
+                                  <Text
+                                    style={{
+                                      fontSize: font.size.caption,
+                                      color: color.textSecondary,
+                                    }}
+                                  >
+                                    Confidence
+                                  </Text>
                                   <Progress
                                     /* confidence is 0..1 from the model */
                                     percent={Math.round(msg.ai_analysis.confidence * 100)}
                                     size={['100px', 6]}
-                                    strokeColor="#10B981"
-                                    trailColor="#D1FAE5"
+                                    strokeColor={color.success}
+                                    trailColor={color.successSoft}
                                     format={(p) => (
-                                      <Text style={{ fontSize: 11, color: '#065F46' }}>{p}%</Text>
+                                      <Text
+                                        style={{
+                                          fontSize: font.size.caption,
+                                          color: color.textSecondary,
+                                        }}
+                                      >
+                                        {p}%
+                                      </Text>
                                     )}
                                   />
                                 </Flex>
@@ -378,16 +446,16 @@ export default function Conversations() {
               <div
                 style={{
                   padding: '12px 20px',
-                  borderTop: '1px solid #F0F0F0',
-                  background: '#FFFFFF',
+                  borderTop: `1px solid ${color.separator}`,
+                  background: color.surface,
                 }}
               >
-                <Flex gap={10} align="center">
+                <Flex gap={space.sm} align="center">
                   <Input
                     placeholder="Type a message..."
                     value={messageText}
                     onChange={(e) => setMessageText(e.target.value)}
-                    style={{ borderRadius: 20, paddingLeft: 16 }}
+                    style={{ borderRadius: radius.pill, paddingLeft: space.lg }}
                     onPressEnter={handleSend}
                     disabled={sending}
                   />
@@ -398,9 +466,9 @@ export default function Conversations() {
                     loading={sending}
                     onClick={handleSend}
                     style={{
-                      background: 'linear-gradient(135deg, #4F46E5, #6366F1)',
-                      border: 'none',
-                      boxShadow: '0 2px 8px rgba(79,70,229,0.3)',
+                      background: color.accent,
+                      borderColor: color.accent,
+                      color: color.textOnAccent,
                     }}
                   />
                 </Flex>
@@ -419,25 +487,26 @@ function MsgBubble({ msg, isOut }: { msg: Msg; isOut: boolean }) {
     : '';
 
   return (
-    <Flex justify={isOut ? 'flex-end' : 'flex-start'} style={{ marginBottom: 12 }}>
+    <Flex justify={isOut ? 'flex-end' : 'flex-start'} style={{ marginBottom: space.md }}>
       <div
         style={{
           maxWidth: '65%',
           padding: '10px 14px',
-          borderRadius: isOut ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-          background: isOut
-            ? 'linear-gradient(135deg, #4F46E5, #6366F1)'
-            : '#FFFFFF',
-          color: isOut ? '#FFFFFF' : '#111827',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-          border: isOut ? 'none' : '1px solid #F0F0F0',
+          borderRadius: isOut
+            ? `${radius.xl}px ${radius.xl}px ${space.xs}px ${radius.xl}px`
+            : `${radius.xl}px ${radius.xl}px ${radius.xl}px ${space.xs}px`,
+          // Outgoing: accent + textOnAccent (#FFFFFF on #0B6BCB ≈ 5.1:1, AA for
+          // normal text). Incoming: quiet fill + primary label (≈ 16:1).
+          background: isOut ? color.accent : color.fill,
+          color: isOut ? color.textOnAccent : color.text,
+          border: isOut ? `1px solid ${color.accent}` : `1px solid ${color.separator}`,
         }}
       >
         <Text
           style={{
-            fontSize: 13.5,
+            fontSize: font.size.body,
             lineHeight: 1.5,
-            color: isOut ? '#FFFFFF' : '#111827',
+            color: isOut ? color.textOnAccent : color.text,
             whiteSpace: 'pre-wrap',
           }}
         >
@@ -445,16 +514,18 @@ function MsgBubble({ msg, isOut }: { msg: Msg; isOut: boolean }) {
         </Text>
         <Text
           style={{
-            fontSize: 10,
-            color: isOut ? 'rgba(255,255,255,0.7)' : '#9CA3AF',
+            fontSize: font.size.caption,
+            // Full-strength white rather than a translucent wash so the timestamp
+            // and delivery ticks stay readable on the accent fill.
+            color: isOut ? color.textOnAccent : color.textTertiary,
             display: 'block',
             textAlign: 'right',
-            marginTop: 4,
+            marginTop: space.xs,
           }}
         >
           {time}
           {isOut && msg.status && (
-            <span style={{ marginLeft: 4 }}>
+            <span style={{ marginLeft: space.xs }}>
               {msg.status === 'read' ? '✓✓' : msg.status === 'delivered' ? '✓✓' : '✓'}
             </span>
           )}
