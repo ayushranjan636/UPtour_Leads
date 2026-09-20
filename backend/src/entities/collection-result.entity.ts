@@ -41,6 +41,16 @@ export class CollectionResult {
   @Column({ nullable: true })
   country: string;
 
+  /** Mirrors Company: kept on the audit row so a scrape stays self-describing. */
+  @Column({ length: 2, nullable: true })
+  country_code: string;
+
+  @Column({ nullable: true })
+  state_region: string;
+
+  @Column({ nullable: true })
+  district: string;
+
   @Column({ nullable: true })
   city: string;
 

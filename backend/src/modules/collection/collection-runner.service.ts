@@ -25,6 +25,21 @@ import {
 } from './google-places.provider';
 
 /**
+ * True when Google rejected a request because the supplied pageToken belongs to a
+ * different request shape.
+ *
+ * Matched on the message because the provider surfaces this as a generic Error —
+ * Google returns plain HTTP 400 INVALID_ARGUMENT for it, indistinguishable by status
+ * from other bad-request causes we must not swallow.
+ */
+function isStalePageTokenError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /paging requests must match|invalid.*page.?token|page.?token.*invalid/i.test(
+    message,
+  );
+}
+
+/**
  * COLLECTION RUNNER — real Google Maps Places scraping
  *
  * Flow per job (matches docs/02-flow-document.md §2):
@@ -146,11 +161,40 @@ export class CollectionRunnerService {
       while (imported < limit && queryIndex < queries.length) {
         const textQuery = queries[queryIndex];
 
-        const { places, nextPageToken } = await this.places.searchText({
-          textQuery,
-          pageToken,
-          pageSize: 20,
-        });
+        let places: PlaceResult[];
+        let nextPageToken: string | null;
+        try {
+          ({ places, nextPageToken } = await this.places.searchText({
+            textQuery,
+            pageToken,
+            pageSize: 20,
+            // Bias results toward the target country so "travel agency in Delhi"
+            // cannot drift to a same-named place elsewhere. Must stay identical
+            // across pages or Google rejects the pageToken.
+            regionCode: this.regionHint(job.country),
+            // Pin the response language. Google otherwise localises component names
+            // to the place's own locale, so one Delhi listing returns "Delhi" and the
+            // next "दिल्ली" — which splits a single state into two filter options.
+            languageCode: 'en',
+          }));
+        } catch (error) {
+          // A stored pagination_token is only valid for the exact request that
+          // produced it. Any change to the query or its parameters — including this
+          // service adding regionCode — invalidates cursors persisted by earlier
+          // runs, and Google answers with HTTP 400 "parameters for paging requests
+          // must match". Without this recovery the job would fail on every run
+          // forever, needing a manual database edit to clear the token.
+          if (pageToken && isStalePageTokenError(error)) {
+            this.logger.warn(
+              `Discarding stale pagination cursor for "${textQuery}" ` +
+                '(request parameters changed since it was issued); restarting this query.',
+            );
+            pageToken = null;
+            await this.jobRepo.update(job.id, { pagination_token: null as any });
+            continue;
+          }
+          throw error;
+        }
 
         scanned += places.length;
 
@@ -215,8 +259,14 @@ export class CollectionRunnerService {
       raw_data: place.raw,
       business_name: place.name,
       phone: phone ?? place.phone ?? (null as any),
-      country: job.country,
-      city: place.address ? this.cityFrom(place.address, job.city) : job.city,
+      // Prefer what Google actually returned over what the operator typed. A
+      // country-wide job has no city input at all, and the operator's free-text
+      // spelling ("japan", "UAE ") is unreliable for filtering.
+      country: place.location.country ?? job.country,
+      country_code: place.location.countryCode ?? (null as any),
+      state_region: place.location.state ?? (null as any),
+      district: place.location.district ?? (null as any),
+      city: place.location.city ?? job.city ?? (null as any),
       address: place.address ?? (null as any),
       website: place.website ?? (null as any),
       google_place_id: place.placeId,
@@ -252,8 +302,12 @@ export class CollectionRunnerService {
     const company = await this.companyRepo.save(
       this.companyRepo.create({
         name: place.name || 'Unknown',
-        country: job.country,
-        city: base.city ?? (null as any),
+        country: base.country,
+        country_code: base.country_code,
+        state_region: base.state_region,
+        district: base.district,
+        city: base.city,
+        postal_code: place.location.postalCode ?? (null as any),
         address: place.address ?? (null as any),
         website: place.website ?? (null as any),
         agency_type: place.primaryType ?? job.category ?? (null as any),
@@ -388,14 +442,6 @@ export class CollectionRunnerService {
       israel: 'IL',
     };
     return map[country.trim().toLowerCase()] ?? 'IN';
-  }
-
-  /**
-   * Google returns a single formattedAddress string. Rather than guess with a
-   * fragile parse, fall back to the job's configured city.
-   */
-  private cityFrom(_address: string, jobCity?: string): string | null {
-    return jobCity || null;
   }
 
   private dayKey(date: Date): string {

@@ -45,8 +45,32 @@ export interface PlaceResult {
   userRatingCount: number | null;
   primaryType: string | null;
   types: string[];
+  /** Structured administrative location, parsed from `addressComponents`. */
+  location: PlaceLocation;
   /** Full raw place object, stored for auditability. */
   raw: Record<string, any>;
+}
+
+/**
+ * Administrative hierarchy for a place, resolved from Google's address components.
+ *
+ * Google's levels do not map onto one universal civic vocabulary, so we normalise
+ * to the labels this product uses:
+ *   - `state`    <- administrative_area_level_1 (state / province / prefecture / emirate)
+ *   - `district` <- administrative_area_level_2 (district / county / metropolitan area)
+ *   - `city`     <- locality, falling back to postal_town / sublocality, since many
+ *                   regions (notably the UK and parts of Asia) omit `locality`.
+ * Every field is nullable: coverage genuinely varies by country, and a wrong guess
+ * is worse than an absent value for filtering.
+ */
+export interface PlaceLocation {
+  country: string | null;
+  /** ISO 3166-1 alpha-2, e.g. "IN". Stable across languages, unlike the name. */
+  countryCode: string | null;
+  state: string | null;
+  district: string | null;
+  city: string | null;
+  postalCode: string | null;
 }
 
 export interface SearchTextOptions {
@@ -63,13 +87,23 @@ export interface SearchTextResponse {
 }
 
 /**
- * Only the fields we actually persist. Adding fields here increases the billed
- * SKU tier, so keep this list minimal and intentional.
+ * Only the fields we actually persist.
+ *
+ * Billing note: requests are charged at the highest SKU tier any requested field
+ * belongs to. `internationalPhoneNumber`, `websiteUri`, `rating` and
+ * `userRatingCount` are Enterprise-tier, so this request is already billed at
+ * Text Search Enterprise. `addressComponents` is Pro-tier and therefore adds no
+ * incremental cost here — but adding an Atmosphere-tier field would raise the tier,
+ * so keep that in mind before extending this list.
+ * See https://developers.google.com/maps/documentation/places/web-service/usage-and-billing
  */
 const FIELD_MASK = [
   'places.id',
   'places.displayName',
   'places.formattedAddress',
+  // Structured admin hierarchy: country / state / district / city, so filtering does
+  // not depend on parsing the flat formattedAddress string.
+  'places.addressComponents',
   'places.internationalPhoneNumber',
   'places.nationalPhoneNumber',
   'places.websiteUri',
@@ -81,6 +115,62 @@ const FIELD_MASK = [
 ].join(',');
 
 const MIN_REQUEST_INTERVAL_MS = 2_000;
+
+/** One entry of Google's `addressComponents` array. */
+interface AddressComponent {
+  longText?: string;
+  shortText?: string;
+  types?: string[];
+}
+
+const EMPTY_LOCATION: PlaceLocation = {
+  country: null,
+  countryCode: null,
+  state: null,
+  district: null,
+  city: null,
+  postalCode: null,
+};
+
+/**
+ * Resolve the administrative hierarchy from Google's `addressComponents`.
+ *
+ * Exported for unit testing: this is pure and deserves coverage independent of the
+ * network, since component coverage differs sharply between countries.
+ *
+ * City resolution walks a fallback chain rather than trusting `locality` alone:
+ * UK addresses often carry `postal_town` with no `locality`, and dense metros in
+ * India and Japan frequently only populate a `sublocality`. Taking the first match
+ * in priority order yields a usable city far more often than a single lookup.
+ */
+export function extractLocation(components: unknown): PlaceLocation {
+  if (!Array.isArray(components)) return { ...EMPTY_LOCATION };
+
+  const typed = components as AddressComponent[];
+
+  /** First component whose `types` includes `type`. */
+  const find = (type: string): AddressComponent | undefined =>
+    typed.find((c) => Array.isArray(c.types) && c.types.includes(type));
+
+  const pick = (type: string): string | null => find(type)?.longText?.trim() || null;
+
+  const country = find('country');
+  const cityLike =
+    find('locality') ??
+    find('postal_town') ??
+    find('sublocality_level_1') ??
+    find('sublocality');
+
+  return {
+    country: country?.longText?.trim() || null,
+    // shortText on `country` is the ISO 3166-1 alpha-2 code.
+    countryCode: country?.shortText?.trim()?.toUpperCase() || null,
+    state: pick('administrative_area_level_1'),
+    district: pick('administrative_area_level_2'),
+    city: cityLike?.longText?.trim() || null,
+    postalCode: pick('postal_code'),
+  };
+}
 
 @Injectable()
 export class GooglePlacesProvider {
@@ -177,6 +267,7 @@ export class GooglePlacesProvider {
         typeof p.userRatingCount === 'number' ? p.userRatingCount : null,
       primaryType: p.primaryType ?? null,
       types: Array.isArray(p.types) ? p.types : [],
+      location: extractLocation(p.addressComponents),
       raw: p,
     };
   }

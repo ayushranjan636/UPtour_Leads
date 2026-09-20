@@ -3,7 +3,6 @@ import {
   Table,
   Button,
   Input,
-  Select,
   Modal,
   Form,
   Typography,
@@ -26,6 +25,7 @@ import {
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
 import StatusTag from '../components/StatusTag';
+import LocationFilter, { type LocationFilterValue } from '../components/LocationFilter';
 import { contactsAPI } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
@@ -39,11 +39,21 @@ interface Contact {
   phone?: string;
   designation?: string;
   company_id?: string;
-  country?: string;
   is_opted_out?: boolean;
   is_whatsapp_verified?: boolean;
   created_at?: string;
-  company?: { name: string };
+  /**
+   * Location lives on the company, not the contact. The old code declared a
+   * top-level `country` and rendered a column from it, which was always undefined —
+   * so every row showed a dash.
+   */
+  company?: {
+    name?: string;
+    country?: string;
+    state_region?: string;
+    district?: string;
+    city?: string;
+  };
 }
 
 export default function Contacts() {
@@ -53,7 +63,7 @@ export default function Contacts() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState('');
-  const [filterCountry, setFilterCountry] = useState<string | undefined>(undefined);
+  const [location, setLocation] = useState<LocationFilterValue>({});
   const [modalOpen, setModalOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [form] = Form.useForm();
@@ -65,7 +75,10 @@ export default function Contacts() {
     try {
       const params: Record<string, unknown> = { page, limit: pageSize };
       if (search) params.search = search;
-      if (filterCountry) params.country = filterCountry;
+      // Only send set levels; an undefined value would serialise as "undefined".
+      for (const [key, value] of Object.entries(location)) {
+        if (value) params[key] = value;
+      }
       const { data: res } = await contactsAPI.list(params);
       setData(res.data ?? []);
       setTotal(res.total ?? 0);
@@ -74,7 +87,9 @@ export default function Contacts() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, search, filterCountry]);
+    // `location` is an object rebuilt on every change, so depend on its serialised
+    // form to avoid refetching when nothing actually changed.
+  }, [page, pageSize, search, JSON.stringify(location)]);
 
   useEffect(() => {
     fetchContacts();
@@ -186,24 +201,40 @@ export default function Contacts() {
       ),
     },
     {
-      title: 'Country',
-      dataIndex: 'country',
-      key: 'country',
-      render: (c: string) =>
-        c ? (
-          <Flex align="center" gap={6}>
-            <GlobalOutlined style={{ color: color.textTertiary, fontSize: 13 }} />
-            {c}
-          </Flex>
-        ) : (
-          <Text style={{ color: color.textTertiary }}>—</Text>
-        ),
+      // Replaces a "Country" column bound to `contact.country`, a field that does not
+      // exist — it rendered a dash for every row. Location lives on the company.
+      title: 'Location',
+      key: 'location',
+      render: (_: unknown, record: Contact) => {
+        const c = record.company;
+        // City and state are the useful pair for outreach; district is often a
+        // "…Division" administrative label that adds noise without aiding scanning.
+        const primary = [c?.city, c?.state_region].filter(Boolean).join(', ');
+        if (!primary && !c?.country) {
+          return <Text style={{ color: color.textTertiary }}>—</Text>;
+        }
+        return (
+          <div style={{ minWidth: 0 }}>
+            {primary && (
+              <Text style={{ fontSize: font.size.footnote, display: 'block' }}>{primary}</Text>
+            )}
+            {c?.country && (
+              <Flex align="center" gap={4}>
+                <GlobalOutlined style={{ color: color.textTertiary, fontSize: 11 }} />
+                <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+                  {c.country}
+                </Text>
+              </Flex>
+            )}
+          </div>
+        );
+      },
     },
     {
-      title: 'Designation',
-      dataIndex: 'designation',
-      key: 'designation',
-      render: (d: string) => d || <Text style={{ color: color.textTertiary }}>—</Text>,
+      title: 'Company',
+      key: 'company',
+      render: (_: unknown, record: Contact) =>
+        record.company?.name || <Text style={{ color: color.textTertiary }}>—</Text>,
     },
     {
       title: 'Status',
@@ -286,7 +317,11 @@ export default function Contacts() {
     },
   ];
 
-  if (!loading && data.length === 0 && !search && !filterCountry) {
+  // The designed empty state is only right when the dataset itself is empty. With a
+  // search or filter applied, the table's own "no matches" state is the honest answer.
+  const hasFilters = !!search || Object.values(location).some(Boolean);
+
+  if (!loading && data.length === 0 && !hasFilters) {
     return (
       <div>
         <PageHeader title="Contacts" subtitle="No contacts yet" />
@@ -344,9 +379,9 @@ export default function Contacts() {
         }
       />
 
-      <Flex gap={space.sm} wrap style={{ marginBottom: space.lg }}>
+      <Flex gap={space.sm} wrap style={{ marginBottom: space.lg }} align="center">
         <Input
-          placeholder="Search name, number, or email"
+          placeholder="Search name, number, company, or email"
           aria-label="Search contacts"
           prefix={<SearchOutlined style={{ color: color.textTertiary }} />}
           style={{ maxWidth: 300, flex: '1 1 220px' }}
@@ -354,23 +389,10 @@ export default function Contacts() {
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           allowClear
         />
-        <Select
-          placeholder="All countries"
-          aria-label="Filter by country"
-          allowClear
-          style={{ width: 168 }}
-          value={filterCountry}
-          onChange={(v) => { setFilterCountry(v); setPage(1); }}
-          options={[
-            { label: 'Japan', value: 'Japan' },
-            { label: 'India', value: 'India' },
-            { label: 'United Kingdom', value: 'United Kingdom' },
-            { label: 'UAE', value: 'UAE' },
-            { label: 'France', value: 'France' },
-            { label: 'Thailand', value: 'Thailand' },
-            { label: 'Germany', value: 'Germany' },
-            { label: 'Australia', value: 'Australia' },
-          ]}
+        <LocationFilter
+          value={location}
+          onChange={(next) => { setLocation(next); setPage(1); }}
+          showAgencyType
         />
       </Flex>
 

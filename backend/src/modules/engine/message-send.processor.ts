@@ -64,7 +64,10 @@ export class MessageSendProcessor extends WorkerHost {
       // 1. Load entities
       const cc = await this.ccRepo.findOne({
         where: { id: campaignContactId },
-        relations: ['contact', 'campaign'],
+        // contact.company is required: renderTemplate resolves {{company_name}} and
+        // {{country}} from it. Without the relation both silently rendered as empty
+        // strings in every outbound message.
+        relations: ['contact', 'contact.company', 'campaign'],
       });
       if (!cc) throw new Error(`CampaignContact ${campaignContactId} not found`);
 
@@ -77,28 +80,23 @@ export class MessageSendProcessor extends WorkerHost {
         return { skipped: true, reason: 'opted_out_or_suppressed' };
       }
 
-      // 2. Find the right template
-      const template = await this.templateRepo.findOne({
-        where: {
-          campaign_id: campaignId,
-          sequence_order: cc.current_sequence_step,
-        },
-        order: { sequence_order: 'ASC' },
-      });
-
-      if (!template) {
-        // Fallback: use first template
-        const fallback = await this.templateRepo.findOne({
-          where: { campaign_id: campaignId },
-          order: { sequence_order: 'ASC' },
-        });
-        if (!fallback) throw new Error(`No templates found for campaign ${campaignId}`);
-      }
-
-      const activeTemplate = template || await this.templateRepo.findOne({
+      // 2. Find the right template.
+      // Resolve the step match and the fallback in one query rather than up to three:
+      // the previous version queried the fallback twice and discarded the first result.
+      const templates = await this.templateRepo.find({
         where: { campaign_id: campaignId },
         order: { sequence_order: 'ASC' },
       });
+
+      if (!templates.length) {
+        throw new Error(`No templates found for campaign ${campaignId}`);
+      }
+
+      const activeTemplate =
+        templates.find((t) => t.sequence_order === cc.current_sequence_step) ??
+        // Lowest sequence_order. Covers the common case where the first template was
+        // authored as step 1 while current_sequence_step starts at 0.
+        templates[0];
 
       // 3. Render template
       const renderedBody = this.renderTemplate(activeTemplate.body, contact, campaign);
@@ -195,15 +193,22 @@ export class MessageSendProcessor extends WorkerHost {
 
   /**
    * Replace template variables with actual contact/campaign data.
-   * Supports: {{contact_name}}, {{company_name}}, {{country}}, {{product}}
+   * Supports: {{contact_name}}, {{company_name}}, {{country}}, {{state}},
+   * {{district}}, {{city}}, {{product}}, {{campaign_name}}
    */
   private renderTemplate(body: string, contact: Contact, campaign: Campaign): string {
     if (!body) return '';
 
+    // Requires the caller to have loaded `contact.company` — see process().
+    const company = (contact as any).company;
+
     return body
       .replace(/\{\{contact_name\}\}/g, contact.name || 'there')
-      .replace(/\{\{company_name\}\}/g, (contact as any).company?.name || '')
-      .replace(/\{\{country\}\}/g, (contact as any).company?.country || '')
+      .replace(/\{\{company_name\}\}/g, company?.name || '')
+      .replace(/\{\{country\}\}/g, company?.country || '')
+      .replace(/\{\{state\}\}/g, company?.state_region || '')
+      .replace(/\{\{district\}\}/g, company?.district || '')
+      .replace(/\{\{city\}\}/g, company?.city || '')
       .replace(/\{\{product\}\}/g, campaign.product || '')
       .replace(/\{\{campaign_name\}\}/g, campaign.name || '');
   }

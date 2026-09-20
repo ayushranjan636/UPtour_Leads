@@ -1,7 +1,7 @@
 // NEW contacts.service.ts — LEAN version
 import { Injectable, BadRequestException, ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Repository, SelectQueryBuilder } from 'typeorm';
 import { BaseService } from '../../common/base/base.service';
 import { Contact } from '../../entities/contact.entity';
 import { Company } from '../../entities/company.entity';
@@ -27,22 +27,184 @@ export class ContactsService extends BaseService<Contact> {
     private readonly redis: RedisService,
   ) { super(); }
 
+  /**
+   * Apply the shared contact filter set to a query builder.
+   *
+   * Extracted so the contacts list, the location facets and the campaign
+   * audience-by-filter path all resolve an identical result set. If they diverged,
+   * the count shown in the campaign review step would not match who actually gets
+   * enrolled — the exact class of bug that makes a send flow untrustworthy.
+   *
+   * Assumes the caller has joined the company relation as `company`.
+   */
+  private applyContactFilters(
+    qb: SelectQueryBuilder<Contact>,
+    query: QueryContactDto,
+  ): SelectQueryBuilder<Contact> {
+    const {
+      country,
+      state_region,
+      district,
+      city,
+      agency_type,
+      whatsapp_verified,
+      reachable_only,
+      campaign_id,
+      not_in_campaign_id,
+      is_opted_out,
+      search,
+    } = query;
+
+    // LOWER(...) rather than `=`: the collector writes whatever Google returned and
+    // the CSV importer whatever the operator typed, so casing is not dependable.
+    if (country) qb.andWhere('LOWER(company.country) = LOWER(:country)', { country });
+    if (state_region) {
+      qb.andWhere('LOWER(company.state_region) = LOWER(:state_region)', { state_region });
+    }
+    if (district) qb.andWhere('LOWER(company.district) = LOWER(:district)', { district });
+    if (city) qb.andWhere('LOWER(company.city) = LOWER(:city)', { city });
+    if (agency_type) {
+      qb.andWhere('LOWER(company.agency_type) = LOWER(:agency_type)', { agency_type });
+    }
+
+    if (whatsapp_verified !== undefined) {
+      qb.andWhere('contact.whatsapp_verified = :whatsapp_verified', { whatsapp_verified });
+    }
+
+    // Mirrors the distributor's own eligibility test (send-distributor.service.ts),
+    // so an audience count reflects who is actually sendable.
+    if (reachable_only) {
+      qb.andWhere('contact.is_opted_out = false').andWhere('contact.is_suppressed = false');
+    }
+
+    if (campaign_id) {
+      qb.innerJoin('contact.campaign_contacts', 'cc', 'cc.campaign_id = :campaign_id', {
+        campaign_id,
+      });
+    }
+
+    if (not_in_campaign_id) {
+      qb.andWhere(
+        `NOT EXISTS (
+           SELECT 1 FROM campaign_contacts existing
+           WHERE existing.contact_id = contact.id
+             AND existing.campaign_id = :not_in_campaign_id
+         )`,
+        { not_in_campaign_id },
+      );
+    }
+
+    if (is_opted_out !== undefined) qb.andWhere('contact.is_opted_out = :is_opted_out', { is_opted_out });
+
+    if (search) {
+      qb.andWhere(
+        '(contact.name ILIKE :s OR contact.whatsapp_number ILIKE :s OR contact.email ILIKE :s OR company.name ILIKE :s)',
+        { s: `%${search}%` },
+      );
+    }
+
+    return qb;
+  }
+
   /** Custom findAll with advanced filtering */
   async findFiltered(query: QueryContactDto): Promise<PaginatedResponseDto<Contact>> {
-    const { page = 1, limit = 20, country, campaign_id, is_opted_out, search } = query;
-    const qb = this.repo.createQueryBuilder('contact')
+    const { page = 1, limit = 20 } = query;
+    const qb = this.repo
+      .createQueryBuilder('contact')
       .leftJoinAndSelect('contact.company', 'company')
       .orderBy('contact.created_at', 'DESC')
       .skip((page - 1) * limit)
       .take(limit);
 
-    if (country) qb.andWhere('company.country = :country', { country });
-    if (campaign_id) qb.innerJoin('contact.campaign_contacts', 'cc', 'cc.campaign_id = :campaign_id', { campaign_id });
-    if (is_opted_out !== undefined) qb.andWhere('contact.is_opted_out = :is_opted_out', { is_opted_out });
-    if (search) qb.andWhere('(contact.name ILIKE :s OR contact.whatsapp_number ILIKE :s OR contact.email ILIKE :s)', { s: `%${search}%` });
+    this.applyContactFilters(qb, query);
 
     const [data, total] = await qb.getManyAndCount();
     return new PaginatedResponseDto(data, total, page, limit);
+  }
+
+  /**
+   * Count contacts matching a filter, without paging.
+   *
+   * Powers the live audience size in the campaign builder, where the operator needs
+   * the real total rather than the length of the current page.
+   */
+  async countFiltered(query: QueryContactDto): Promise<number> {
+    const qb = this.repo.createQueryBuilder('contact').leftJoin('contact.company', 'company');
+    this.applyContactFilters(qb, query);
+    return qb.getCount();
+  }
+
+  /**
+   * Resolve every contact id matching a filter.
+   *
+   * Used to enrol an audience into a campaign server-side. The previous UI could only
+   * add from the first 100 contacts it had fetched, so anything beyond that was
+   * unreachable; this removes the ceiling.
+   */
+  async findIdsFiltered(query: QueryContactDto): Promise<string[]> {
+    const qb = this.repo
+      .createQueryBuilder('contact')
+      .leftJoin('contact.company', 'company')
+      .select('contact.id', 'id');
+    this.applyContactFilters(qb, query);
+    const rows = await qb.getRawMany<{ id: string }>();
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Distinct location values present in the data, for populating filter dropdowns.
+   *
+   * Driven by the database rather than a hardcoded list, which previously offered 8
+   * countries regardless of what had actually been collected — so a scrape of a
+   * 9th country produced contacts that could not be filtered at all.
+   *
+   * Each level is narrowed by the level above it so the UI can cascade
+   * Country -> State -> District.
+   */
+  async locationFacets(filter: {
+    country?: string;
+    state_region?: string;
+  }): Promise<{
+    countries: string[];
+    states: string[];
+    districts: string[];
+    cities: string[];
+    agencyTypes: string[];
+  }> {
+    // Only values attached to a contact are useful: a company with no contacts can
+    // never appear in a contact-filtered result.
+    const distinct = async (column: string, scope: Record<string, string> = {}) => {
+      const qb = this.repo
+        .createQueryBuilder('contact')
+        .innerJoin('contact.company', 'company')
+        .select(`company.${column}`, 'value')
+        .distinct(true)
+        .andWhere(`company.${column} IS NOT NULL`)
+        .andWhere(`company.${column} <> ''`)
+        .orderBy('value', 'ASC');
+
+      for (const [key, value] of Object.entries(scope)) {
+        qb.andWhere(`LOWER(company.${key}) = LOWER(:${key})`, { [key]: value });
+      }
+
+      const rows = await qb.getRawMany<{ value: string }>();
+      return rows.map((r) => r.value);
+    };
+
+    const countryScope = filter.country ? { country: filter.country } : {};
+    const stateScope = filter.state_region
+      ? { ...countryScope, state_region: filter.state_region }
+      : countryScope;
+
+    const [countries, states, districts, cities, agencyTypes] = await Promise.all([
+      distinct('country'),
+      distinct('state_region', countryScope),
+      distinct('district', stateScope),
+      distinct('city', stateScope),
+      distinct('agency_type', countryScope),
+    ]);
+
+    return { countries, states, districts, cities, agencyTypes };
   }
 
   /** Override create with phone normalization + dedup */

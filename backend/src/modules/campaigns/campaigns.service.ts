@@ -8,6 +8,44 @@ import { Contact } from '../../entities/contact.entity';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { PaginatedResponseDto } from '../../common/dto/paginated-response.dto';
+import { ContactsService } from '../contacts/contacts.service';
+import { QueryContactDto } from '../contacts/dto/query-contact.dto';
+import { MessageTemplate } from '../../entities/message-template.entity';
+
+/** Shape returned by getSendPreview — the facts behind the "send" decision. */
+export interface SendPreview {
+  campaign: {
+    id: string;
+    name: string;
+    status: CampaignStatus;
+    daily_send_limit: number;
+    send_window_start: string;
+    send_window_end: string;
+    send_window_timezone: string;
+  };
+  audience: {
+    total: number;
+    sendable: number;
+    pending: number;
+    alreadyProcessed: number;
+    unverified: number;
+  };
+  excluded: {
+    optedOut: number;
+    suppressed: number;
+    reasons: { reason: string; count: number }[];
+  };
+  schedule: { estimatedDays: number; firstDayCount: number };
+  templates: {
+    id: string;
+    name: string;
+    type: string;
+    sequence_order: number;
+    trigger_condition: string;
+    body: string;
+  }[];
+  blockers: string[];
+}
 
 /**
  * State machine for campaign status transitions.
@@ -30,6 +68,8 @@ export class CampaignsService extends BaseService<Campaign> {
     @InjectRepository(Campaign) protected readonly repo: Repository<Campaign>,
     @InjectRepository(CampaignContact) private readonly ccRepo: Repository<CampaignContact>,
     @InjectRepository(Contact) private readonly contactRepo: Repository<Contact>,
+    @InjectRepository(MessageTemplate) private readonly templateRepo: Repository<MessageTemplate>,
+    private readonly contactsService: ContactsService,
   ) { super(); }
 
   async createCampaign(dto: CreateCampaignDto, userId: string): Promise<Campaign> {
@@ -48,6 +88,135 @@ export class CampaignsService extends BaseService<Campaign> {
   /** One-liner state transitions using the state machine */
   async activate(id: string): Promise<Campaign> { return this.transitionTo(id, CampaignStatus.ACTIVE); }
   async pause(id: string): Promise<Campaign> { return this.transitionTo(id, CampaignStatus.PAUSED); }
+
+  /**
+   * Enrol every contact matching a filter.
+   *
+   * Resolves ids server-side via the same filter logic the contacts list uses, so
+   * the audience matches exactly what the operator previewed. The previous flow
+   * could only add from the 100 contacts the modal happened to have fetched, which
+   * silently capped every audience.
+   */
+  async addContactsByFilter(
+    campaignId: string,
+    filter: QueryContactDto,
+  ): Promise<{ added: number; skipped: number; matched: number }> {
+    await this.findById(campaignId);
+
+    const ids = await this.contactsService.findIdsFiltered({
+      ...filter,
+      // Never enrol someone who cannot be messaged; the distributor would skip them
+      // anyway and they would sit at 'pending' forever, blocking auto-complete.
+      reachable_only: true,
+    });
+
+    if (!ids.length) {
+      return { added: 0, skipped: 0, matched: 0 };
+    }
+
+    const result = await this.addContacts(campaignId, ids);
+    return { ...result, matched: ids.length };
+  }
+
+  /**
+   * Everything the operator needs to confirm before a campaign goes live.
+   *
+   * Activation previously sent real WhatsApp messages on a single click with no
+   * confirmation and no indication of who would receive what. This assembles the
+   * facts for that decision: audience size, why anyone is excluded, the template
+   * that will actually be used, and when sending would start and finish under the
+   * campaign's own pacing rules.
+   */
+  async getSendPreview(campaignId: string): Promise<SendPreview> {
+    const campaign = await this.findById(campaignId);
+
+    const rows = await this.ccRepo
+      .createQueryBuilder('cc')
+      .innerJoin('cc.contact', 'c')
+      .select('cc.status', 'status')
+      .addSelect('c.is_opted_out', 'opted_out')
+      .addSelect('c.is_suppressed', 'suppressed')
+      .addSelect('c.suppressed_reason', 'suppressed_reason')
+      .addSelect('c.whatsapp_verified', 'verified')
+      .where('cc.campaign_id = :campaignId', { campaignId })
+      .getRawMany<{
+        status: string;
+        opted_out: boolean;
+        suppressed: boolean;
+        suppressed_reason: string | null;
+        verified: boolean;
+      }>();
+
+    const pending = rows.filter((r) => r.status === 'pending');
+    // Mirrors send-distributor.service.ts eligibility exactly.
+    const sendable = pending.filter((r) => !r.opted_out && !r.suppressed);
+    const optedOut = pending.filter((r) => r.opted_out).length;
+    const suppressed = pending.filter((r) => !r.opted_out && r.suppressed).length;
+    const alreadyProcessed = rows.length - pending.length;
+
+    const dailyLimit = campaign.daily_send_limit || 100;
+    const days = sendable.length > 0 ? Math.ceil(sendable.length / dailyLimit) : 0;
+
+    const templates = await this.templateRepo.find({
+      where: { campaign_id: campaignId },
+      order: { sequence_order: 'ASC' },
+    });
+
+    return {
+      campaign: {
+        id: campaign.id,
+        name: campaign.name,
+        status: campaign.status,
+        daily_send_limit: dailyLimit,
+        send_window_start: campaign.send_window_start,
+        send_window_end: campaign.send_window_end,
+        send_window_timezone: campaign.send_window_timezone,
+      },
+      audience: {
+        total: rows.length,
+        sendable: sendable.length,
+        pending: pending.length,
+        alreadyProcessed,
+        unverified: sendable.filter((r) => !r.verified).length,
+      },
+      excluded: {
+        optedOut,
+        suppressed,
+        // Surfaces *why*, so "why is my audience smaller than expected" is answerable
+        // without opening the database.
+        reasons: Object.entries(
+          pending
+            .filter((r) => r.suppressed && r.suppressed_reason)
+            .reduce<Record<string, number>>((acc, r) => {
+              const key = r.suppressed_reason as string;
+              acc[key] = (acc[key] ?? 0) + 1;
+              return acc;
+            }, {}),
+        ).map(([reason, count]) => ({ reason, count })),
+      },
+      schedule: {
+        estimatedDays: days,
+        firstDayCount: Math.min(sendable.length, dailyLimit),
+      },
+      templates: templates.map((t) => ({
+        id: t.id,
+        name: t.name,
+        type: t.type,
+        sequence_order: t.sequence_order,
+        trigger_condition: t.trigger_condition,
+        body: t.body,
+      })),
+      /** Blocking problems. A non-empty list means activation cannot succeed usefully. */
+      blockers: [
+        ...(templates.length === 0
+          ? ['No message template — the campaign would fail on every send.']
+          : []),
+        ...(sendable.length === 0
+          ? ['No sendable contacts — add an audience before activating.']
+          : []),
+      ],
+    };
+  }
 
   private async transitionTo(id: string, target: CampaignStatus): Promise<Campaign> {
     const campaign = await this.findById(id);

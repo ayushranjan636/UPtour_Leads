@@ -29,6 +29,32 @@ export class ContactsController {
     return this.svc.findFiltered(query);
   }
 
+  @Get('locations')
+  @ApiOperation({
+    summary: 'Distinct location values for filter dropdowns',
+    description:
+      'Returns the countries, states, districts, cities and agency types actually ' +
+      'present in the data. Pass `country` to narrow states/cities, and `state_region` ' +
+      'to narrow districts, so the UI can cascade Country → State → District.',
+  })
+  locations(
+    @Query('country') country?: string,
+    @Query('state_region') state_region?: string,
+  ) {
+    return this.svc.locationFacets({ country, state_region });
+  }
+
+  @Get('count')
+  @ApiOperation({
+    summary: 'Count contacts matching a filter',
+    description:
+      'Unpaginated total for the given filters. Used for the live audience size in ' +
+      'the campaign builder, which needs the real total rather than a page length.',
+  })
+  async count(@Query() query: QueryContactDto) {
+    return { count: await this.svc.countFiltered(query) };
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get contact by ID' })
   findOne(@Param('id', ParseUUIDPipe) id: string) {

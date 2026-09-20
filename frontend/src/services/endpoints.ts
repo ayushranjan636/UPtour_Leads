@@ -32,6 +32,16 @@ export const contactsAPI = {
    * keeping the record.
    */
   remove: (id: string) => api.delete(`/contacts/${id}`),
+  /**
+   * Distinct location values actually present in the data, for filter dropdowns.
+   * Pass `country` to narrow states/cities and `state_region` to narrow districts,
+   * so the UI can cascade Country → State → District.
+   */
+  locations: (params?: { country?: string; state_region?: string }) =>
+    api.get('/contacts/locations', { params }),
+  /** Unpaginated total for a filter — the real audience size, not a page length. */
+  count: (params?: Record<string, unknown>) =>
+    api.get('/contacts/count', { params }),
 };
 
 /* ── Companies ────────────────────────────────────── */
@@ -56,6 +66,15 @@ export const campaignsAPI = {
   pause: (id: string) => api.post(`/campaigns/${id}/pause`),
   addContacts: (id: string, contactIds: string[]) =>
     api.post(`/campaigns/${id}/contacts`, { contactIds }),
+  /**
+   * Enrols every contact matching a filter, resolved server-side. Removes the old
+   * client-side ceiling where only the first 100 fetched contacts could be added.
+   * Opted-out and suppressed contacts are always excluded.
+   */
+  addContactsByFilter: (id: string, filter: Record<string, unknown>) =>
+    api.post(`/campaigns/${id}/contacts/by-filter`, filter),
+  /** Audience size, exclusions, templates, schedule and blockers — shown before sending. */
+  sendPreview: (id: string) => api.get(`/campaigns/${id}/send-preview`),
   getContacts: (id: string, params?: Record<string, unknown>) =>
     api.get(`/campaigns/${id}/contacts`, { params }),
   getStats: (id: string) => api.get(`/campaigns/${id}/stats`),
