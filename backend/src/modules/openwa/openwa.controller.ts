@@ -1,8 +1,10 @@
 import {
   Controller,
   Get,
+  HttpCode,
   HttpStatus,
   Param,
+  Post,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -77,5 +79,60 @@ export class OpenwaController {
   })
   async getHealth() {
     return this.openwaService.getHealth();
+  }
+
+  @Get('connection')
+  @ApiOperation({
+    summary: 'WhatsApp connection state for the portal',
+    description:
+      'Single call that answers "can we send right now, and if not what should the ' +
+      'operator do". Backs the dashboard indicator and its Connect button.',
+  })
+  async getConnection() {
+    return this.openwaService.getConnectionState();
+  }
+
+  @Post('connect')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Begin linking a WhatsApp number',
+    description:
+      'Ensures a session exists and is starting, then returns a QR code to scan. ' +
+      'Safe to call repeatedly — it reuses the existing session rather than creating ' +
+      'duplicates. Poll GET /whatsapp/connection until status is "ready".',
+  })
+  async connect() {
+    return this.openwaService.beginConnect();
+  }
+
+  @Get('qr')
+  @ApiOperation({
+    summary: 'Current QR code for the pending session',
+    description: 'Returns a data-URI PNG while the session is waiting to be scanned.',
+  })
+  async getQr() {
+    return this.openwaService.getQrCode();
+  }
+
+  @Get('portal-link')
+  @ApiOperation({
+    summary: 'One-click link into the WhatsApp gateway dashboard',
+    description:
+      'Returns the gateway URL with a single-use handover fragment so an operator who ' +
+      'is already signed in to this portal is not asked for an API key. The fragment is ' +
+      'never sent to a server and the gateway strips it from the address bar on arrival.',
+  })
+  async getPortalLink() {
+    return this.openwaService.getPortalLink();
+  }
+
+  @Post('disconnect')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Log the WhatsApp number out',
+    description: 'Unlinks the device. A new QR scan is required to send again.',
+  })
+  async disconnect() {
+    return this.openwaService.disconnect();
   }
 }

@@ -282,6 +282,208 @@ export class OpenwaService {
     }
   }
 
+  /**
+   * One call that tells the portal whether outreach can run right now.
+   *
+   * Collapses "is the gateway up", "does a session exist" and "is it linked" into a
+   * single answer plus an operator-facing next action, so the dashboard does not have
+   * to reimplement that reasoning.
+   */
+  async getConnectionState(): Promise<{
+    connected: boolean;
+    gatewayReachable: boolean;
+    status: string;
+    phone: string | null;
+    sessionId: string | null;
+    sessionName: string | null;
+    /** True while a QR is pending, i.e. the operator needs to scan. */
+    awaitingScan: boolean;
+    message: string;
+  }> {
+    let sessions: any[];
+    try {
+      sessions = await this.getSessions();
+    } catch {
+      return {
+        connected: false,
+        gatewayReachable: false,
+        status: 'gateway_unreachable',
+        phone: null,
+        sessionId: null,
+        sessionName: null,
+        awaitingScan: false,
+        message: 'The WhatsApp gateway is not running.',
+      };
+    }
+
+    const session = Array.isArray(sessions)
+      ? (sessions.find((s) => s?.status === SENDABLE_STATUS) ?? sessions[0])
+      : undefined;
+
+    if (!session) {
+      return {
+        connected: false,
+        gatewayReachable: true,
+        status: 'no_session',
+        phone: null,
+        sessionId: null,
+        sessionName: null,
+        awaitingScan: false,
+        message: 'No WhatsApp number is linked yet.',
+      };
+    }
+
+    const status: string = session.status ?? 'unknown';
+    const connected = status === SENDABLE_STATUS;
+    // qr_ready is the state where a code is displayed and waiting to be scanned.
+    const awaitingScan = status === 'qr_ready' || status === 'qr';
+
+    return {
+      connected,
+      gatewayReachable: true,
+      status,
+      phone: session.phone ?? null,
+      sessionId: session.id ?? null,
+      sessionName: session.name ?? null,
+      awaitingScan,
+      message: connected
+        ? `Connected as ${session.phone ?? session.name}`
+        : awaitingScan
+          ? 'Scan the QR code with WhatsApp to finish connecting.'
+          : `WhatsApp is ${status}.`,
+    };
+  }
+
+  /**
+   * Ensure a session exists, is started, and surface its QR code.
+   *
+   * Idempotent: an existing session is reused and merely (re)started, so repeated
+   * clicks on Connect cannot pile up orphan sessions. The QR is not available the
+   * instant a session starts — the browser has to reach WhatsApp Web first — so a
+   * null qrCode here means "poll again", not "failed".
+   */
+  async beginConnect(
+    name = 'uptour',
+  ): Promise<{ sessionId: string; status: string; qrCode: string | null; message: string }> {
+    const sessions = await this.getSessions().catch(() => [] as any[]);
+    let session = Array.isArray(sessions) ? sessions[0] : undefined;
+
+    if (!session) {
+      this.logger.log('No WhatsApp session exists — creating one');
+      try {
+        const { data } = await this.client.post('/sessions', { name });
+        session = data;
+      } catch (error) {
+        this.handleAxiosError(error, 'Could not create a WhatsApp session');
+      }
+    }
+
+    const sessionId: string = session.id;
+    this.invalidateSessionCache();
+
+    if (session.status !== SENDABLE_STATUS) {
+      try {
+        await this.client.post(`/sessions/${sessionId}/start`);
+      } catch (error) {
+        // Already-starting sessions answer 4xx; that is not a failure for us.
+        const status = (error as AxiosError)?.response?.status;
+        if (!status || status >= 500) {
+          this.handleAxiosError(error, 'Could not start the WhatsApp session');
+        }
+        this.logger.log(`Session ${sessionId} was already starting (${status})`);
+      }
+    }
+
+    const qrCode = await this.fetchQr(sessionId);
+    return {
+      sessionId,
+      status: session.status ?? 'initializing',
+      qrCode,
+      message: qrCode
+        ? 'Scan this QR code with WhatsApp on your phone.'
+        : 'Preparing the QR code — this takes a few seconds.',
+    };
+  }
+
+  /** QR for whichever session is currently pending. */
+  async getQrCode(): Promise<{ sessionId: string | null; qrCode: string | null; status: string }> {
+    const sessions = await this.getSessions().catch(() => [] as any[]);
+    const session = Array.isArray(sessions) ? sessions[0] : undefined;
+    if (!session) return { sessionId: null, qrCode: null, status: 'no_session' };
+
+    return {
+      sessionId: session.id,
+      status: session.status ?? 'unknown',
+      qrCode: session.status === SENDABLE_STATUS ? null : await this.fetchQr(session.id),
+    };
+  }
+
+  /**
+   * Build a pre-authenticated link into the gateway dashboard.
+   *
+   * The key travels in the URL *fragment*, which browsers never transmit to a server,
+   * so it cannot appear in gateway access logs or a proxy trail. The dashboard stores
+   * it in sessionStorage and strips the fragment on arrival. This endpoint is behind
+   * the portal's own JWT auth, so only an already-authenticated operator can obtain it.
+   *
+   * OPENWA_PUBLIC_URL exists because OPENWA_BASE_URL may be a container-internal
+   * address (http://openwa:2785/api) that a browser cannot resolve.
+   */
+  getPortalLink(): { url: string } {
+    const configured = this.configService.get<string>('OPENWA_PUBLIC_URL')?.trim();
+    const base = (configured || this.deriveBrowserUrl()).replace(/\/+$/, '');
+    const apiKey = this.configService.getOrThrow<string>('OPENWA_API_KEY');
+    return { url: `${base}/#key=${encodeURIComponent(apiKey)}` };
+  }
+
+  /**
+   * Best-effort browser-reachable gateway URL derived from OPENWA_BASE_URL.
+   * Drops the trailing /api and rewrites container-only hostnames to localhost.
+   */
+  private deriveBrowserUrl(): string {
+    const raw = this.configService.getOrThrow<string>('OPENWA_BASE_URL');
+    try {
+      const url = new URL(raw);
+      if (url.hostname === 'openwa' || url.hostname === 'host.docker.internal') {
+        url.hostname = 'localhost';
+      }
+      url.pathname = '';
+      return url.toString();
+    } catch {
+      return 'http://localhost:2785';
+    }
+  }
+
+  /** Unlink the device. A fresh scan is required afterwards. */
+  async disconnect(): Promise<{ disconnected: boolean }> {
+    const sessions = await this.getSessions().catch(() => [] as any[]);
+    const session = Array.isArray(sessions) ? sessions[0] : undefined;
+    if (!session) return { disconnected: true };
+
+    try {
+      await this.client.post(`/sessions/${session.id}/logout`);
+    } catch (error) {
+      this.handleAxiosError(error, 'Could not disconnect the WhatsApp session');
+    }
+    this.invalidateSessionCache();
+    return { disconnected: true };
+  }
+
+  /**
+   * Fetch a QR code, tolerating the not-yet-ready case.
+   *
+   * The gateway answers 400 "QR code is not ready yet" for a short window after a
+   * session starts, which is expected rather than exceptional — the caller polls.
+   */
+  private async fetchQr(sessionId: string): Promise<string | null> {
+    try {
+      const { data } = await this.client.get(`/sessions/${sessionId}/qr`);
+      return data?.qrCode ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private handleAxiosError(error: unknown, context: string): never {
     if (error instanceof AxiosError) {
       const status =

@@ -136,6 +136,17 @@ export class WebhooksService {
       const phone = this.normalizeJidToPhone(senderJid);
       this.logger.log(`Incoming message from ${phone} (JID: ${senderJid})`);
 
+      // Ignore group and broadcast traffic.
+      //
+      // The auto-create path below turns any unrecognised sender into a CRM contact.
+      // For a group JID (`…@g.us`) or a status broadcast that produces a junk contact
+      // named after the group id, which then appears in audiences and could be
+      // messaged. Only 1:1 chats represent a person we do outreach to.
+      if (this.isNonIndividualChat(senderJid)) {
+        this.logger.log(`Ignoring ${senderJid}: not a one-to-one chat`);
+        return;
+      }
+
       let contact = await this.contactRepo.findOne({
         where: [
           { whatsapp_number: phone },
@@ -396,6 +407,17 @@ export class WebhooksService {
   private normalizeJidToPhone(jid: string): string {
     const raw = jid.replace(/@c\.us$/, '').replace(/@s\.whatsapp\.net$/, '');
     return raw.startsWith('+') ? raw : `+${raw}`;
+  }
+
+  /**
+   * True for JIDs that do not represent a single person we can do outreach to.
+   *
+   * `@g.us` is a group, `@broadcast` covers status updates and broadcast lists, and
+   * `@newsletter` is a WhatsApp Channel. A 1:1 chat is `@c.us`, `@s.whatsapp.net`, or
+   * `@lid` (the privacy-preserving id newer clients use).
+   */
+  private isNonIndividualChat(jid: string): boolean {
+    return /@(g\.us|broadcast|newsletter)$/i.test(jid);
   }
 
   private mapAckToStatus(ack: number | string): {

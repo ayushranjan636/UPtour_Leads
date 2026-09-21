@@ -186,13 +186,96 @@ export const engineAPI = {
   }) => api.get('/engine/distribution-plan', { params }),
 };
 
-/* ── Messaging gateway (infrastructure) ───────────────
- * The WhatsApp gateway is deliberately treated as opaque infrastructure here.
- * Session management, QR pairing and per-session admin live in the gateway's own
- * dashboard, NOT in this portal — so only a health probe is exposed.
+/* ── Messaging gateway (WhatsApp) ─────────────────────
+ * Beyond the raw health probe the portal now owns the pairing flow: an operator
+ * can see whether a WhatsApp session is linked, scan a QR code to link one, and
+ * unlink it — without leaving for the gateway's own dashboard.
  */
+
+/**
+ * Session lifecycle reported by `GET /whatsapp/connection`.
+ *
+ * `ready` is the only value that means messages can actually be sent;
+ * `gateway_unreachable` means the gateway process itself is down, which is a
+ * different (infrastructure) problem from a session that simply needs scanning.
+ */
+export type WhatsAppStatus =
+  | 'ready'
+  | 'qr_ready'
+  | 'initializing'
+  | 'authenticating'
+  | 'disconnected'
+  | 'no_session'
+  | 'gateway_unreachable';
+
+/** Current pairing state of the gateway's WhatsApp session. */
+export interface WhatsAppConnection {
+  connected: boolean;
+  gatewayReachable: boolean;
+  status: WhatsAppStatus;
+  /** Linked phone number in E.164-ish form, or null when unpaired. */
+  phone: string | null;
+  sessionId: string | null;
+  sessionName: string | null;
+  /** True while a QR code is (or is about to be) waiting to be scanned. */
+  awaitingScan: boolean;
+  /** Human-readable explanation, safe to show directly in the UI. */
+  message: string;
+}
+
+/** Result of kicking off a pairing attempt. */
+export interface WhatsAppConnectResult {
+  sessionId: string;
+  status: WhatsAppStatus;
+  /**
+   * Data-URI PNG (`data:image/png;base64,...`), or null meaning "not generated
+   * yet" — poll `qr()` rather than treating null as a failure.
+   */
+  qrCode: string | null;
+  message: string;
+}
+
+/** A single QR snapshot. WhatsApp rotates the code, so this must be re-polled. */
+export interface WhatsAppQrResult {
+  sessionId: string;
+  qrCode: string | null;
+  status: WhatsAppStatus;
+}
+
 export const gatewayAPI = {
+  /** Liveness of the gateway process. Pair with `isGatewayHealthy`. */
   getHealth: () => api.get('/whatsapp/health'),
+
+  /**
+   * Full pairing state — used for the Dashboard indicator and the Settings tab.
+   * Never throws for a *disconnected* gateway: that is reported in the payload
+   * via `gatewayReachable: false`.
+   */
+  connection: () => api.get<WhatsAppConnection>('/whatsapp/connection'),
+
+  /**
+   * Starts (or restarts) a pairing attempt and returns the first QR code if the
+   * gateway already has one. A null `qrCode` is normal — keep polling `qr()`.
+   */
+  connect: () => api.post<WhatsAppConnectResult>('/whatsapp/connect'),
+
+  /**
+   * Latest QR code for the in-progress pairing. Poll every few seconds while the
+   * modal is open, because WhatsApp expires each code after ~20s.
+   */
+  qr: () => api.get<WhatsAppQrResult>('/whatsapp/qr'),
+
+  /**
+   * Unlinks the session. Destructive in practice: reconnecting requires another
+   * QR scan on the phone, so always confirm with the operator first.
+   */
+  disconnect: () => api.post<{ disconnected: boolean }>('/whatsapp/disconnect'),
+  /**
+   * Pre-authenticated link into the gateway dashboard. The API key travels in the URL
+   * fragment (never sent to a server) and the gateway strips it on arrival, so an
+   * operator already signed in here is not asked to paste a key.
+   */
+  portalLink: () => api.get<{ url: string }>('/whatsapp/portal-link'),
 };
 
 /**

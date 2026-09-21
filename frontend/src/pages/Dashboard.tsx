@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Row, Col, Card, Table, Typography, Progress, Flex, Spin, Empty, Badge, Tooltip } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { Row, Col, Card, Table, Typography, Progress, Flex, Spin, Empty, Badge, Button } from 'antd';
 import {
   ContactsOutlined,
   SendOutlined,
@@ -7,10 +7,13 @@ import {
   MessageOutlined,
   FunnelPlotOutlined,
   TrophyOutlined,
+  WhatsAppOutlined,
 } from '@ant-design/icons';
 import StatCard from '../components/StatCard';
 import PageHeader from '../components/PageHeader';
-import { dashboardAPI, gatewayAPI, isGatewayHealthy } from '../services/endpoints';
+import WhatsAppConnectModal from '../components/WhatsAppConnectModal';
+import { dashboardAPI, gatewayAPI } from '../services/endpoints';
+import type { WhatsAppConnection } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
@@ -60,7 +63,10 @@ export default function Dashboard() {
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [pipeline, setPipeline] = useState<PipelineEntry[]>([]);
-  const [gatewayUp, setGatewayUp] = useState<boolean | null>(null);
+  const [connection, setConnection] = useState<WhatsAppConnection | null>(null);
+  const [connectOpen, setConnectOpen] = useState(false);
+  /** Bumped to force an out-of-band re-probe, e.g. right after pairing succeeds. */
+  const [connectionTick, setConnectionTick] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -84,25 +90,40 @@ export default function Dashboard() {
     load();
   }, []);
 
-  // Gateway health is fetched separately so a gateway outage never blocks or
-  // blanks the business metrics above — they come from our own database.
+  // WhatsApp connection state is fetched separately so a gateway outage never
+  // blocks or blanks the business metrics above — they come from our own database.
+  // A failed request is reported as "unreachable" rather than thrown away, so the
+  // operator always sees *why* messaging is unavailable.
   useEffect(() => {
     let cancelled = false;
     const probe = async () => {
       try {
-        const { data } = await gatewayAPI.getHealth();
-        if (!cancelled) setGatewayUp(isGatewayHealthy(data));
+        const { data } = await gatewayAPI.connection();
+        if (!cancelled) setConnection(data);
       } catch {
-        if (!cancelled) setGatewayUp(false);
+        if (!cancelled) {
+          setConnection({
+            connected: false,
+            gatewayReachable: false,
+            status: 'gateway_unreachable',
+            phone: null,
+            sessionId: null,
+            sessionName: null,
+            awaitingScan: false,
+            message: 'Messaging gateway unreachable',
+          });
+        }
       }
     };
-    probe();
-    const timer = setInterval(probe, 60_000);
+    void probe();
+    const timer = setInterval(() => void probe(), 30_000);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [connectionTick]);
+
+  const refreshConnection = useCallback(() => setConnectionTick((n) => n + 1), []);
 
   if (loading) {
     return (
@@ -211,6 +232,17 @@ export default function Dashboard() {
 
   const maxPipelineCount = Math.max(...pipeline.map((s) => s.count), 1);
 
+  const connected = connection?.connected === true;
+  // Amber for a session problem the operator can fix by scanning; red only when
+  // the gateway process itself is unreachable and scanning would not help.
+  const problemColor = connection?.gatewayReachable ? color.warning : color.danger;
+  const connectionLabel = connected
+    ? connection?.phone
+      ? `WhatsApp connected · ${connection.phone}`
+      : 'WhatsApp connected'
+    : // Empty/absent messages fall back, so the badge never renders blank.
+      (connection?.message?.trim() || 'WhatsApp not connected');
+
   return (
     <div>
       <Flex justify="space-between" align="flex-start" wrap gap={space.md}>
@@ -218,31 +250,39 @@ export default function Dashboard() {
           title="Dashboard"
           subtitle="Welcome back — here's what's happening today"
         />
-        {gatewayUp !== null && (
-          <Tooltip
-            title={
-              gatewayUp
-                ? 'Outbound messaging is available.'
-                : 'Messaging is unavailable — campaigns cannot send until it recovers.'
-            }
-          >
+        {connection && (
+          <Flex align="center" gap={space.md} wrap style={{ marginTop: 6 }}>
             <Badge
-              status={gatewayUp ? 'success' : 'error'}
+              status={connected ? 'success' : connection.gatewayReachable ? 'warning' : 'error'}
               text={
                 <Text
                   style={{
                     fontSize: font.size.footnote,
-                    color: gatewayUp ? color.success : color.danger,
+                    color: connected ? color.success : problemColor,
                   }}
                 >
-                  {gatewayUp ? 'Messaging active' : 'Messaging unavailable'}
+                  {connectionLabel}
                 </Text>
               }
-              style={{ marginTop: 6 }}
             />
-          </Tooltip>
+            {!connected && (
+              <Button
+                type="primary"
+                icon={<WhatsAppOutlined />}
+                onClick={() => setConnectOpen(true)}
+              >
+                Connect WhatsApp
+              </Button>
+            )}
+          </Flex>
         )}
       </Flex>
+
+      <WhatsAppConnectModal
+        open={connectOpen}
+        onClose={() => setConnectOpen(false)}
+        onConnected={refreshConnection}
+      />
 
       <Row gutter={[20, 20]} style={{ marginBottom: 28 }}>
         {stats.map((s) => (
