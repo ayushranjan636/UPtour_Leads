@@ -64,6 +64,12 @@ services:
       - REDIS_ENABLED=false
       - ENGINE_TYPE=whatsapp-web.js
       - SIMULATE_TYPING=true
+      # The first chat-list fetch after linking syncs the whole history through the
+      # headless browser and can exceed puppeteer's 180s protocol timeout, surfacing
+      # as `Runtime.callFunctionOn timed out` and a failed chat load. 300s covers a
+      # large initial sync; it only caps how long a single CDP call may take, so a
+      # higher value costs nothing on fast calls.
+      - PUPPETEER_PROTOCOL_TIMEOUT_MS=${OPENWA_PROTOCOL_TIMEOUT_MS:-300000}
       - ENABLE_SWAGGER=true
       - AUTO_START_SESSIONS=true
       - CORS_ORIGINS=*
