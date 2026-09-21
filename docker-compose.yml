@@ -67,20 +67,25 @@ services:
       - ENABLE_SWAGGER=true
       - AUTO_START_SESSIONS=true
       - CORS_ORIGINS=*
-      - BRAND_NAME=${OPENWA_BRAND_NAME:-UP Heritage Tours}
+      # We serve the dashboard over plain http://localhost, so the production
+      # default (CSP upgrade-insecure-requests) would rewrite its script URLs to
+      # https:// and render a blank page. Only safe to leave false because this
+      # instance is loopback-only; put it behind TLS before exposing it.
+      - CSP_UPGRADE_INSECURE_REQUESTS=${OPENWA_CSP_UPGRADE:-false}
       # Webhook delivery is SSRF-guarded (default ON) and our backend is an
       # internal target, so it must be allowlisted by exact hostname or delivery
       # is rejected with 400. This is the documented escape hatch — much narrower
       # than WEBHOOK_SSRF_PROTECT=false, which would disable the guard entirely.
       # `backend` = compose service; `host.docker.internal` = backend on the host.
       - SSRF_ALLOWED_HOSTS=${OPENWA_SSRF_ALLOWED_HOSTS:-backend,host.docker.internal}
-      # OpenWA authenticates callers via API_MASTER_KEY; must match the
-      # backend's OPENWA_API_KEY, which it sends as the X-API-Key header.
-      - API_MASTER_KEY=${OPENWA_API_KEY:?set OPENWA_API_KEY in .env}
-      # Dashboard username/password login. When empty OpenWA treats credential
-      # login as "not configured" and only accepts the raw API key as a token.
-      - ADMIN_USERNAME=${OPENWA_ADMIN_USERNAME:-}
-      - ADMIN_PASSWORD=${OPENWA_ADMIN_PASSWORD:-}
+      # OpenWA refuses to boot in production unless API_MASTER_KEY is >= 32 chars
+      # (new in v0.5+). Note this value only *seeds* the admin key on first boot,
+      # when the database has no keys yet — it does not rotate an existing one. Our
+      # volume was seeded by an earlier version, so the key the backend actually
+      # authenticates with is OPENWA_API_KEY below, which must match the row already
+      # stored in the gateway's database. Rotate properly from the dashboard
+      # (Settings -> API keys), then update OPENWA_API_KEY in backend/.env to match.
+      - API_MASTER_KEY=${OPENWA_MASTER_KEY:?set OPENWA_MASTER_KEY in .env (>= 32 chars)}
       # NOTE: webhooks are NOT configured by env — OpenWA reads no WEBHOOK_URL/
       # WEBHOOK_SECRET. They are per-session rows created via
       # POST /api/sessions/:id/webhooks. See scripts/setup-openwa.sh.

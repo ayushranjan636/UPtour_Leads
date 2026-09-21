@@ -18,3 +18,7 @@ coverage/
 # Committing it would store an absolute path that resolves nowhere else.
 # Clone OpenWA separately and point OPENWA_CONTEXT in .env at it.
 /openwa
+
+# Local volume backups. These contain WhatsApp session credentials and message
+# history — never commit them.
+/.backups/
