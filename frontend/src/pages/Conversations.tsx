@@ -37,6 +37,8 @@ interface Msg {
   body: string;
   created_at: string;
   status?: string;
+  /** Populated by the backend when a send fails; surfaced as a tooltip. */
+  failed_reason?: string;
   // Backend attaches `ai_analyses` (plural, an array) — see
   // backend/src/modules/messages/messages.service.ts. We normalise it to a
   // single `ai_analysis` in fetchMessages below.
@@ -116,12 +118,22 @@ export default function Conversations() {
       await messagesAPI.send({ contactId: selectedContact.id, body: messageText });
       setMessageText('');
       fetchMessages(selectedContact.id);
-    } catch {
-      message.error('Failed to send message');
+    } catch (err: unknown) {
+      // The backend now returns a real error status (503 when WhatsApp is not
+      // connected, 400 for an opted-out contact) instead of 201 with a failed row,
+      // so show its message rather than a generic string. Keep the draft text so
+      // the operator does not have to retype it.
+      const detail = (err as { response?: { data?: { message?: string } } })?.response?.data
+        ?.message;
+      message.error(detail ?? 'Could not send the message. Check that WhatsApp is connected.');
+      // Refresh anyway: the failed attempt is persisted and should appear as ⚠.
+      fetchMessages(selectedContact.id);
     } finally {
       setSending(false);
     }
   };
+
+  /** Human-readable tooltip for a delivery state. */
 
   const selectContact = (contact: Contact) => {
     setSelectedContact(contact);
@@ -481,8 +493,20 @@ export default function Conversations() {
   );
 }
 
-function MsgBubble({ msg, isOut }: { msg: Msg; isOut: boolean }) {
-  const time = msg.created_at
+/**
+ * Human-readable tooltip for a delivery state. Module scope so `MsgBubble` (a
+ * sibling component, not nested) can use it.
+ */
+function statusLabel(status?: string, failedReason?: string): string {
+  if (status === 'failed') return failedReason ? `Failed: ${failedReason}` : 'Failed to send';
+  if (status === 'queued') return 'Queued — not yet sent';
+  if (status === 'read') return 'Read';
+  if (status === 'delivered') return 'Delivered';
+  if (status === 'sent') return 'Sent';
+  return status ?? '';
+}
+
+function MsgBubble({ msg, isOut }: { msg: Msg; isOut: boolean }) {  const time = msg.created_at
     ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : '';
 
@@ -525,8 +549,17 @@ function MsgBubble({ msg, isOut }: { msg: Msg; isOut: boolean }) {
         >
           {time}
           {isOut && msg.status && (
-            <span style={{ marginLeft: space.xs }}>
-              {msg.status === 'read' ? '✓✓' : msg.status === 'delivered' ? '✓✓' : '✓'}
+            <span style={{ marginLeft: space.xs }} title={statusLabel(msg.status, msg.failed_reason)}>
+              {/* `failed` and `queued` previously both rendered a plain "✓",
+                  indistinguishable from a delivered message — so a dead gateway
+                  looked exactly like a successful send. */}
+              {msg.status === 'failed'
+                ? '⚠'
+                : msg.status === 'queued'
+                  ? '🕘'
+                  : msg.status === 'read' || msg.status === 'delivered'
+                    ? '✓✓'
+                    : '✓'}
             </span>
           )}
         </Text>

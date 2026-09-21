@@ -8,7 +8,7 @@ import { Contact } from '../../entities/contact.entity';
 import { Campaign } from '../../entities/campaign.entity';
 import { Message } from '../../entities/message.entity';
 import { MessageTemplate } from '../../entities/message-template.entity';
-import { OpenwaService } from '../openwa/openwa.service';
+import { OpenwaService, toChatId } from '../openwa/openwa.service';
 import { FollowupSchedulerService } from './followup-scheduler.service';
 
 interface SendJobData {
@@ -101,22 +101,30 @@ export class MessageSendProcessor extends WorkerHost {
       // 3. Render template
       const renderedBody = this.renderTemplate(activeTemplate.body, contact, campaign);
 
-      // 4. Format chat ID for OpenWA
-      const chatId = contact.whatsapp_chat_id || `${contact.whatsapp_number.replace('+', '')}@c.us`;
+      // 4. Format chat ID for OpenWA (shared helper — the manual send path used to
+      //    build this differently and left the leading `+` in, which the gateway rejects)
+      const chatId = toChatId(contact.whatsapp_number, contact.whatsapp_chat_id);
+
+      // 4b. Resolve the real session. Every queue producer enqueues
+      //     `campaign.openwa_session_id || 'default'`, and 'default' is not a session
+      //     id — the gateway answers `400 Session 'default' is not active`. Resolving
+      //     here covers all four producers (distributor, follow-up, sequence, AI reply)
+      //     in one place.
+      const resolvedSessionId = await this.openwa.resolveSessionId(sessionId);
 
       // 5. Send via OpenWA
       let openwaResult: any;
       if (activeTemplate.type === 'text' || !activeTemplate.media_url) {
-        openwaResult = await this.openwa.sendText(sessionId, chatId, renderedBody);
+        openwaResult = await this.openwa.sendText(resolvedSessionId, chatId, renderedBody);
       } else if (activeTemplate.type === 'image') {
-        openwaResult = await this.openwa.sendImage(sessionId, chatId, activeTemplate.media_url, renderedBody);
+        openwaResult = await this.openwa.sendImage(resolvedSessionId, chatId, activeTemplate.media_url, renderedBody);
       } else if (activeTemplate.type === 'document') {
         openwaResult = await this.openwa.sendDocument(
-          sessionId, chatId, activeTemplate.media_url,
+          resolvedSessionId, chatId, activeTemplate.media_url,
           activeTemplate.media_filename || 'document.pdf', renderedBody,
         );
       } else if (activeTemplate.type === 'video') {
-        openwaResult = await this.openwa.sendVideo(sessionId, chatId, activeTemplate.media_url, renderedBody);
+        openwaResult = await this.openwa.sendVideo(resolvedSessionId, chatId, activeTemplate.media_url, renderedBody);
       }
 
       // 6. Store message record
@@ -132,7 +140,7 @@ export class MessageSendProcessor extends WorkerHost {
         // Reading `.id` stored null, so message.ack / message.failed webhooks
         // could never correlate back and statuses were stuck on "sent".
         openwa_message_id: openwaResult?.messageId ?? openwaResult?.id ?? null,
-        openwa_session_id: sessionId,
+        openwa_session_id: resolvedSessionId,
         status: 'sent' as any,
         template_id: activeTemplate.id,
         sent_at: new Date(),

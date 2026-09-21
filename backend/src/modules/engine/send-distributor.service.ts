@@ -127,7 +127,9 @@ export class SendDistributorService {
       // Verify WhatsApp number before sending
       const verified = await this.verifyWhatsAppNumber(
         contact,
-        campaign.openwa_session_id || 'default',
+        // Resolve before the WhatsApp existence check: 'default' is not a session id,
+        // so this check silently errored and fell through to "assume reachable".
+        await this.openwa.resolveSessionId(campaign.openwa_session_id),
       );
 
       if (!verified) {

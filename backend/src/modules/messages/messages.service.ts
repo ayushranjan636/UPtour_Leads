@@ -2,14 +2,17 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  BadRequestException,
+  ServiceUnavailableException,
   InternalServerErrorException,
+  HttpException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Message, MessageDirection, MessageStatus } from '../../entities/message.entity';
 import { Contact } from '../../entities/contact.entity';
 import { AiAnalysis } from '../../entities/ai-analysis.entity';
-import { OpenwaService } from '../openwa/openwa.service';
+import { OpenwaService, toChatId } from '../openwa/openwa.service';
 import { PaginatedResponseDto } from '../../common/dto/paginated-response.dto';
 
 @Injectable()
@@ -91,63 +94,80 @@ export class MessagesService {
     userId: string,
     sessionId?: string,
   ): Promise<Message> {
-    try {
-      const contact = await this.contactRepository.findOne({ where: { id: contactId } });
+    const contact = await this.contactRepository.findOne({ where: { id: contactId } });
 
-      if (!contact) {
-        throw new NotFoundException(`Contact with ID "${contactId}" not found`);
-      }
+    if (!contact) {
+      throw new NotFoundException(`Contact with ID "${contactId}" not found`);
+    }
 
-      if (!contact.whatsapp_chat_id && !contact.whatsapp_number) {
-        throw new NotFoundException(
-          `Contact "${contact.name}" has no WhatsApp number or chat ID configured`,
-        );
-      }
+    if (!contact.whatsapp_chat_id && !contact.whatsapp_number) {
+      throw new NotFoundException(
+        `Contact "${contact.name}" has no WhatsApp number or chat ID configured`,
+      );
+    }
 
-      const chatId = contact.whatsapp_chat_id || `${contact.whatsapp_number}@c.us`;
-      const resolvedSessionId = sessionId || 'default';
+    // Compliance guard. The campaign pipeline has always checked this, but the
+    // manual path did not — so the one route a human drives was the only one that
+    // could message someone who had opted out.
+    if (contact.is_opted_out) {
+      throw new BadRequestException(
+        `${contact.name} has opted out of messages and cannot be contacted.`,
+      );
+    }
+    if (contact.is_suppressed) {
+      throw new BadRequestException(
+        `${contact.name} is suppressed${contact.suppressed_reason ? ` (${contact.suppressed_reason})` : ''} and cannot be contacted.`,
+      );
+    }
 
-      const message = this.messageRepository.create({
+    const chatId = toChatId(contact.whatsapp_number, contact.whatsapp_chat_id);
+    // Resolves to the real session UUID; throws a clear 503 when WhatsApp is not
+    // connected, rather than letting the gateway fail cryptically mid-send.
+    const resolvedSessionId = await this.openwaService.resolveSessionId(sessionId);
+    await this.openwaService.assertSendable(resolvedSessionId);
+
+    const savedMessage = await this.messageRepository.save(
+      this.messageRepository.create({
         contact_id: contactId,
         direction: MessageDirection.OUTGOING,
         type: 'text',
         body,
         openwa_session_id: resolvedSessionId,
         status: MessageStatus.QUEUED,
-      });
+      }),
+    );
 
-      const savedMessage = await this.messageRepository.save(message);
+    try {
+      const result = await this.openwaService.sendText(resolvedSessionId, chatId, body);
 
-      try {
-        const result = await this.openwaService.sendText(resolvedSessionId, chatId, body);
+      // messageId first: OpenWA returns { messageId }, and reading `.id` first
+      // stored null, which broke message.ack webhook correlation.
+      savedMessage.openwa_message_id = result?.messageId ?? result?.id ?? null;
+      savedMessage.status = MessageStatus.SENT;
+      savedMessage.sent_at = new Date();
 
-        savedMessage.openwa_message_id = result?.id || result?.messageId || null;
-        savedMessage.status = MessageStatus.SENT;
-        savedMessage.sent_at = new Date();
-
-        await this.messageRepository.save(savedMessage);
-        this.logger.log(`Manual message sent to contact ${contactId} by user ${userId}`);
-      } catch (sendError) {
-        savedMessage.status = MessageStatus.FAILED;
-        savedMessage.failed_reason = (sendError as Error).message;
-        await this.messageRepository.save(savedMessage);
-
-        this.logger.error(
-          `Failed to send message to contact ${contactId}: ${(sendError as Error).message}`,
-          (sendError as Error).stack,
-        );
-      }
-
+      await this.messageRepository.save(savedMessage);
+      this.logger.log(`Manual message sent to contact ${contactId} by user ${userId}`);
       return savedMessage;
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
+    } catch (sendError) {
+      const reason = (sendError as Error).message;
+      savedMessage.status = MessageStatus.FAILED;
+      savedMessage.failed_reason = reason;
+      await this.messageRepository.save(savedMessage);
+
       this.logger.error(
-        `Failed to send manual message to contact ${contactId}: ${(error as Error).message}`,
-        (error as Error).stack,
+        `Failed to send message to contact ${contactId}: ${reason}`,
+        (sendError as Error).stack,
       );
-      throw new InternalServerErrorException('Failed to send message');
+
+      // The session may have dropped; force re-resolution on the next attempt.
+      this.openwaService.invalidateSessionCache();
+
+      // Rethrow. This previously swallowed the error and returned the failed row,
+      // so the API answered 201 Created and the UI showed a normal sent tick —
+      // there was no way to tell a delivered message from a dead gateway.
+      if (sendError instanceof HttpException) throw sendError;
+      throw new ServiceUnavailableException(`WhatsApp message could not be sent: ${reason}`);
     }
   }
 }
