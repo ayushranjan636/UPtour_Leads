@@ -48,6 +48,25 @@ import {
  *   - Redis-based daily counters (survives restarts)
  *   - Verification caching in Redis (24h TTL)
  */
+/**
+ * Most messages a single distributor cycle may enqueue.
+ *
+ * Queue delays are measured from enqueue time, so a large batch collapses into a burst
+ * regardless of the per-message gaps. Keeping this small means one cycle's sends occupy
+ * several minutes of wall-clock time, which is what the humanised gaps are for.
+ */
+const MAX_PER_CYCLE = 5;
+
+/**
+ * Consecutive send failures that trip the circuit breaker and pause a campaign.
+ *
+ * When WhatsApp restricts a number, every send fails. Without this the distributor
+ * keeps enqueueing into a dead session for the rest of the day, burning the daily
+ * allowance and — worse — continuing to look like automated abuse to WhatsApp. Pausing
+ * turns a silent failure into something an operator sees and can act on.
+ */
+const FAILURE_PAUSE_THRESHOLD = 5;
+
 @Injectable()
 export class SendDistributorService {
   private readonly logger = new Logger(SendDistributorService.name);
@@ -105,6 +124,35 @@ export class SendDistributorService {
   }
 
   /**
+   * Pause a campaign when its recent sends keep failing.
+   *
+   * Counts `failed` campaign_contacts with no successful send after them. A restricted
+   * number fails every send, and continuing to push into that is both futile and an
+   * ongoing abuse signal. Returns true when the campaign was paused.
+   */
+  private async tripBreakerIfFailing(campaign: Campaign): Promise<boolean> {
+    const recent = await this.ccRepo
+      .createQueryBuilder('cc')
+      .select('cc.status', 'status')
+      .where('cc.campaign_id = :id', { id: campaign.id })
+      .andWhere('cc.last_sent_at IS NOT NULL')
+      .orderBy('cc.last_sent_at', 'DESC')
+      .limit(FAILURE_PAUSE_THRESHOLD)
+      .getRawMany<{ status: string }>();
+
+    if (recent.length < FAILURE_PAUSE_THRESHOLD) return false;
+    if (!recent.every((r) => r.status === 'failed')) return false;
+
+    await this.campaignRepo.update(campaign.id, { status: 'paused' as any });
+    this.logger.error(
+      `Campaign "${campaign.name}" paused: the last ${FAILURE_PAUSE_THRESHOLD} sends all ` +
+        'failed. This usually means the WhatsApp session dropped or the number was ' +
+        'restricted — check the gateway before resuming.',
+    );
+    return true;
+  }
+
+  /**
    * Runs every 60 seconds. For each active campaign:
    * 1. Check if within send window (timezone-aware)
    * 2. Check daily limit not exceeded
@@ -127,6 +175,9 @@ export class SendDistributorService {
   }
 
   private async distributeCampaign(campaign: Campaign) {
+    // 0. Circuit breaker: stop pushing into a session that is failing every send.
+    if (await this.tripBreakerIfFailing(campaign)) return;
+
     // 1. Check send window
     if (!this.isWithinSendWindow(campaign)) return;
 
@@ -344,7 +395,11 @@ export class SendDistributorService {
     const messagesPerMinute = remaining / remainingMinutes;
     const batch = Math.ceil(messagesPerMinute);
 
-    return Math.min(batch, remaining, 20); // cap at 20 per cycle for safety
+    // Cap per cycle. Was 20, which let 20 messages leave inside one minute — a burst
+    // that defeats the whole point of the 45-180s humanised gaps, since the queue
+    // delays are relative to enqueue time. 5 keeps a cycle's worth of sends spread
+    // across roughly 4-15 minutes of real time.
+    return Math.min(batch, remaining, MAX_PER_CYCLE);
   }
 
   /**

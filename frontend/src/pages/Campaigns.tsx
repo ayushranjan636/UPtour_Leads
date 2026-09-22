@@ -15,6 +15,7 @@ import {
   Progress,
   Spin,
   Empty,
+  Alert,
   message,
 } from 'antd';
 import {
@@ -33,6 +34,14 @@ import { campaignsAPI } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
+
+/**
+ * Demonstrates both authoring features at once: spintax alternatives in `{a|b}`
+ * and merge fields in `{{field}}`. Kept as a constant so the braces are never
+ * mistaken for JSX expressions.
+ */
+const FIRST_MESSAGE_PLACEHOLDER =
+  '{Hi|Hello} {{contact_name}}, we design heritage tours across Uttar Pradesh for agencies like {{company_name}}. {Interested|Worth a quick chat}?';
 
 interface Campaign {
   id: string;
@@ -97,6 +106,14 @@ export default function Campaigns() {
       }
       if (values.send_window_timezone) {
         payload.send_window_timezone = values.send_window_timezone;
+      }
+      // Optional: when present the backend creates the campaign's opening template
+      // for us, so the operator never has to visit the Templates tab to start
+      // sending. An empty box is omitted rather than sent as "".
+      const firstMessage =
+        typeof values.first_message === 'string' ? values.first_message.trim() : '';
+      if (firstMessage) {
+        payload.first_message = firstMessage;
       }
       await campaignsAPI.create(payload);
       message.success('Campaign created');
@@ -335,6 +352,11 @@ function CampaignModal({
   onSave: () => void;
   onCancel: () => void;
 }) {
+  // Live value so the "no opening message" warning appears and disappears as the
+  // operator types, rather than only after a failed submit.
+  const firstMessage = Form.useWatch<string | undefined>('first_message', form);
+  const hasFirstMessage = !!firstMessage?.trim();
+
   return (
     <Modal
       title="Create New Campaign"
@@ -358,6 +380,52 @@ function CampaignModal({
         <Form.Item name="description" label="Description">
           <Input.TextArea rows={3} placeholder="Campaign description..." />
         </Form.Item>
+        {/* Recommended, not required: sending it here saves a separate trip to the
+            Templates tab, but a campaign can still be created without one. */}
+        <Form.Item
+          name="first_message"
+          label="First Message"
+          rules={[{ required: false }]}
+          style={{ marginBottom: space.xs }}
+        >
+          <Input.TextArea
+            rows={4}
+            maxLength={4096}
+            showCount
+            placeholder={FIRST_MESSAGE_PLACEHOLDER}
+          />
+        </Form.Item>
+        <div style={{ marginBottom: space.lg }}>
+          <Text
+            style={{
+              display: 'block',
+              fontSize: font.size.caption,
+              color: color.textSecondary,
+            }}
+          >
+            Recommended. Merge fields:{' '}
+            {'{{contact_name}}, {{company_name}}, {{city}}, {{state}}, {{country}}, {{product}}'}
+          </Text>
+          <Text
+            style={{
+              display: 'block',
+              marginTop: space.xs,
+              fontSize: font.size.caption,
+              color: color.textSecondary,
+            }}
+          >
+            Spintax: {'{Hi|Hello|Hey}'} picks a different wording per recipient, so no two
+            messages are identical — this reduces the chance WhatsApp flags the account.
+          </Text>
+        </div>
+        {!hasFirstMessage && (
+          <Alert
+            type="warning"
+            showIcon
+            message="Without a first message you'll need to add a message template before this campaign can send."
+            style={{ marginBottom: space.lg, borderRadius: radius.lg }}
+          />
+        )}
         <Flex gap={space.md}>
           <Form.Item name="daily_send_limit" label="Daily Send Limit" style={{ flex: 1 }}>
             <InputNumber min={1} max={500} placeholder="100" style={{ width: '100%' }} />

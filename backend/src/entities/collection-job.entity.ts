@@ -32,6 +32,20 @@ export class CollectionJob {
   @Column({ nullable: true })
   city: string;
 
+  /**
+   * Business categories to search, one Places query per category.
+   *
+   * Replaces a single `category` string. Travel supply is fragmented across Google's
+   * category taxonomy — an agency may be listed as `travel_agency`, `tour_operator`
+   * or `tourist_information_center` — so searching one term at a time missed most of
+   * the market and forced an operator to create near-duplicate jobs.
+   *
+   * `category` is retained below for rows written before this column existed.
+   */
+  @Column('text', { array: true, default: '{}' })
+  categories: string[];
+
+  /** @deprecated Superseded by `categories`. Still read as a fallback for old jobs. */
   @Column({ nullable: true })
   category: string;
 

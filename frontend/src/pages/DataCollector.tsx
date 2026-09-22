@@ -30,12 +30,51 @@ import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
 
+/**
+ * Search terms sent to Google Places. These are free-text queries (the backend builds
+ * `"<category> in <city, country>"`), not Places taxonomy IDs, so they must read as
+ * natural phrases. The original curated list is kept so existing jobs read the same.
+ * One Places search is issued per entry, and the backend de-duplicates
+ * case-insensitively — so terms differing only in casing are deliberately not listed
+ * twice.
+ */
+const CATEGORY_OPTIONS = [
+  { label: 'Travel Agencies', value: 'Travel Agencies' },
+  { label: 'Tour Operators', value: 'Tour Operators' },
+  { label: 'Luxury Travel', value: 'Luxury Travel' },
+  { label: 'Heritage Tourism', value: 'Heritage Tourism' },
+  { label: 'Adventure Tours', value: 'Adventure Tours' },
+  { label: 'Buddhist Pilgrimage', value: 'Buddhist Pilgrimage' },
+  { label: 'Inbound Tourism', value: 'Inbound Tourism' },
+  { label: 'DMC (Destination Mgmt)', value: 'DMC' },
+  { label: 'Travel agency', value: 'travel agency' },
+  { label: 'Tour operator', value: 'tour operator' },
+  { label: 'Travel agent', value: 'travel agent' },
+  { label: 'Holiday packages', value: 'holiday packages' },
+  { label: 'Destination management company', value: 'destination management company' },
+  { label: 'Corporate travel', value: 'corporate travel' },
+  { label: 'Pilgrimage tours', value: 'pilgrimage tours' },
+];
+
+/**
+ * A job's categories for display. Handles both the current `categories` array and
+ * the deprecated singular `category`, so jobs created before multi-select still read
+ * correctly.
+ */
+function formatCategories(job: CollectionJob): string {
+  const list = job.categories?.length ? job.categories : [job.category];
+  const cleaned = list.filter((c): c is string => !!c && c.trim().length > 0);
+  return cleaned.length ? cleaned.join(', ') : 'General';
+}
+
 interface CollectionJob {
   id: string;
   name: string;
   country?: string;
   city?: string;
+  /** Legacy single category — still returned for jobs created before multi-select. */
   category?: string;
+  categories?: string[];
   keywords?: string[];
   daily_limit?: number;
   status?: string;
@@ -122,7 +161,26 @@ export default function DataCollector() {
     try {
       const values = await form.validateFields();
       setSaving(true);
-      await collectionAPI.create(values);
+      // Free-text tags need normalising before they cost money: trim, drop blanks and
+      // de-duplicate, since the backend issues one Google Places search per entry.
+      const categories = Array.isArray(values.categories)
+        ? Array.from(
+            new Set(
+              (values.categories as string[])
+                .map((c) => String(c).trim())
+                .filter(Boolean),
+            ),
+          )
+        : [];
+      const payload: Record<string, unknown> = { ...values };
+      // The single-category field was replaced by `categories`; never send it.
+      delete payload.category;
+      if (categories.length) {
+        payload.categories = categories;
+      } else {
+        delete payload.categories;
+      }
+      await collectionAPI.create(payload);
       message.success('Collection job created');
       setModalOpen(false);
       form.resetFields();
@@ -286,6 +344,8 @@ export default function DataCollector() {
                   </Flex>
 
                   <Text
+                    ellipsis
+                    title={formatCategories(job)}
                     style={{
                       fontSize: font.size.caption,
                       color: color.textTertiary,
@@ -293,7 +353,7 @@ export default function DataCollector() {
                       marginBottom: space.md,
                     }}
                   >
-                    {job.category ?? 'General'} · Limit: {limit || '—'}/day
+                    {formatCategories(job)} · Limit: {limit || '—'}/day
                   </Text>
 
                   <Flex justify="space-between" style={{ marginBottom: space.md }}>
@@ -423,21 +483,36 @@ function CreateJobModal({
             </Form.Item>
           </Col>
         </Row>
-        <Form.Item name="category" label="Business Category" rules={[{ required: true }]}>
+        <Form.Item
+          name="categories"
+          label="Business Categories"
+          initialValue={['travel agency']}
+          rules={[{ required: true, message: 'Pick at least one category' }]}
+          style={{ marginBottom: space.xs }}
+        >
           <Select
-            placeholder="Select category"
-            options={[
-              { label: 'Travel Agencies', value: 'Travel Agencies' },
-              { label: 'Tour Operators', value: 'Tour Operators' },
-              { label: 'Luxury Travel', value: 'Luxury Travel' },
-              { label: 'Heritage Tourism', value: 'Heritage Tourism' },
-              { label: 'Adventure Tours', value: 'Adventure Tours' },
-              { label: 'Buddhist Pilgrimage', value: 'Buddhist Pilgrimage' },
-              { label: 'Inbound Tourism', value: 'Inbound Tourism' },
-              { label: 'DMC (Destination Mgmt)', value: 'DMC' },
-            ]}
+            // `tags` rather than `multiple`: Google's category taxonomy is broader than
+            // any fixed list, so an operator must be able to type a custom term (e.g. a
+            // regional niche). The value is a string array either way, which is what
+            // the backend expects.
+            mode="tags"
+            aria-label="Business categories"
+            placeholder="Select or type categories"
+            maxTagCount="responsive"
+            options={CATEGORY_OPTIONS}
           />
         </Form.Item>
+        <Text
+          style={{
+            display: 'block',
+            marginBottom: space.lg,
+            fontSize: font.size.caption,
+            color: color.textSecondary,
+          }}
+        >
+          Each selected category becomes a separate Google Places search — more coverage,
+          but also more Google Places API calls and more cost.
+        </Text>
         <Form.Item name="auto_add_to_campaign_id" label="Auto-Add to Campaign" extra="Collected contacts will be automatically added to this campaign">
           <Select
             placeholder="Select a campaign (optional)"

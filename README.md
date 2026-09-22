@@ -201,7 +201,8 @@ Campaign scheduler (cron, every 60s)
    · checks send window in the campaign's timezone
    · checks daily limit (Redis counter, keyed on local date)
         ↓
-Send distributor  → spreads the daily quota across the window with jitter
+Send distributor  → draws a fresh random 45-180s gap for every message, and spins
+                    the template so no two recipients get identical text
         ↓
 message-send queue → OpenWA → WhatsApp
         ↓
@@ -213,6 +214,48 @@ Business rules → create lead · handover to human · honour opt-out
         ↓
 Follow-up scheduler → Day 2 / Day 5, all stop conditions checked pre-send
 ```
+
+---
+
+## Account safety (WhatsApp ban risk)
+
+OpenWA drives WhatsApp through a reverse-engineered client, **not** Meta's official
+Cloud API. WhatsApp actively looks for unofficial automation, so the risk of a number
+being restricted is never zero. What the code does, and what only you can do:
+
+### Built in
+
+| Control | Behaviour |
+|---|---|
+| Randomised pacing | Every gap is drawn uniformly from `HUMANIZED_DELAY_MIN_MS`–`MAX` (default 45–180s). A constant interval is the strongest bot signal; nothing here repeats. |
+| Spintax | `{Hi\|Hello\|Hey}` renders a different variant per recipient, so no two messages are byte-identical. |
+| Typing simulation | `SIMULATE_TYPING=true` makes the gateway show "typing…" before each send. |
+| Daily cap | `daily_send_limit` is capped at **200/day** per campaign. |
+| Burst cap | At most **5** messages enqueued per 60s cycle, so one cycle spreads over minutes. |
+| Send window | Messages only go out inside the campaign's local-time window. |
+| Number verification | Each recipient is checked against WhatsApp first; non-users are suppressed, not retried. |
+| Circuit breaker | 5 consecutive failed sends auto-pauses the campaign — a restricted number stops hammering instead of burning the day's quota. |
+| Opt-out honoured | Checked at enrolment, at queue time, and again at send time. |
+| Reply delay | AI replies wait 4–15s; an instant answer is an obvious tell. |
+
+### Your side — this is where the real risk lives
+
+1. **Use a dedicated number you can afford to lose.** Never your primary business line.
+2. **Warm a new number up.** For the first several days behave like a person: real
+   two-way chats, a profile photo, a group or two. Do not activate a campaign on day one.
+3. **Start at 30–50/day**, not 200. Raise it only after the number has a history of
+   genuine replies.
+4. **Cold-blasting strangers is the single most reliable way to get banned**, whatever
+   the pacing. Prefer audiences with some reason to expect you.
+5. **Keep messages conversational and varied.** Use spintax on every template.
+6. **Watch the Dashboard indicator.** If the session drops repeatedly, stop and
+   investigate rather than reconnecting in a loop.
+7. **Respect opt-outs immediately** — the AI sets them automatically, but never
+   re-add a contact who asked to stop.
+
+For anything regulated or revenue-critical, use Meta's official WhatsApp Cloud API
+instead. This stack is appropriate for your own outreach, not as a drop-in for the
+official API.
 
 ---
 

@@ -73,7 +73,34 @@ export class CampaignsService extends BaseService<Campaign> {
   ) { super(); }
 
   async createCampaign(dto: CreateCampaignDto, userId: string): Promise<Campaign> {
-    return this.repo.save(this.repo.create({ ...dto, created_by: userId, status: CampaignStatus.DRAFT }));
+    const { first_message, ...campaignFields } = dto;
+
+    const campaign = await this.repo.save(
+      this.repo.create({ ...campaignFields, created_by: userId, status: CampaignStatus.DRAFT }),
+    );
+
+    // Create the opening template alongside the campaign.
+    //
+    // Without this a new campaign has no message at all: the operator has to notice
+    // that activation is blocked, find the Templates tab, and add one. Since every
+    // campaign needs a first message by definition, it belongs in creation.
+    //
+    // sequence_order 0 matters — current_sequence_step starts at 0, so a template
+    // authored as step 1 never matches and the send falls back.
+    if (first_message?.trim()) {
+      await this.templateRepo.save(
+        this.templateRepo.create({
+          campaign_id: campaign.id,
+          name: 'Opening message',
+          body: first_message.trim(),
+          sequence_order: 0,
+          trigger_condition: 'initial',
+        }),
+      );
+      this.logger.log(`Campaign ${campaign.name} created with an opening message`);
+    }
+
+    return campaign;
   }
 
   async updateCampaign(id: string, dto: UpdateCampaignDto): Promise<Campaign> {

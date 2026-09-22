@@ -5,6 +5,7 @@ import {
   IsInt,
   Min,
   Max,
+  MaxLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
@@ -41,11 +42,20 @@ export class CreateCampaignDto {
   @IsString()
   target_agency_type?: string;
 
-  @ApiPropertyOptional({ description: 'Daily message send limit', default: 100, minimum: 1, maximum: 500 })
+  @ApiPropertyOptional({
+    description:
+      'Messages per day for this campaign. Capped at 200: this sends through an ' +
+      'unofficial WhatsApp client, where sustained high volume is the most reliable ' +
+      'way to get a number restricted. Treat 30-50/day as normal, and only raise it ' +
+      'once the number has a history of real two-way conversations.',
+    default: 100,
+    minimum: 1,
+    maximum: 200,
+  })
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(500)
+  @Max(200)
   daily_send_limit?: number;
 
   @ApiPropertyOptional({ description: 'Send window start time (HH:mm)', example: '09:00' })
@@ -84,4 +94,20 @@ export class CreateCampaignDto {
   @Min(0)
   @Max(10)
   max_followups?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'The opening message sent to each contact. Stored as the campaign\'s first ' +
+      'template (sequence_order 0). Supports merge fields — {{contact_name}}, ' +
+      '{{company_name}}, {{city}}, {{state}}, {{country}}, {{product}} — and spintax ' +
+      'such as {Hi|Hello|Hey}, which renders a different variant per recipient so no ' +
+      'two messages are byte-identical.',
+    example: '{Hi|Hello} {{contact_name}}, we design heritage tours across UP. {Interested|Worth a chat}?',
+    maxLength: 4096,
+  })
+  @IsOptional()
+  @IsString()
+  // WhatsApp's own text limit; a longer body would be rejected at send time.
+  @MaxLength(4096)
+  first_message?: string;
 }

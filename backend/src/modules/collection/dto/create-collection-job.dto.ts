@@ -50,8 +50,23 @@ export class CreateCollectionJobDto {
   city?: string;
 
   @ApiPropertyOptional({
-    description: 'Business category to search',
+    description:
+      'Business categories to search. One Places query is issued per category, so ' +
+      'several related categories can be covered by a single job. Accepts an array ' +
+      'or a comma-separated string.',
+    example: ['travel agency', 'tour operator'],
+    type: [String],
+  })
+  @IsOptional()
+  @Transform(({ value }) => toStringArray(value))
+  @IsArray()
+  @IsString({ each: true })
+  categories?: string[];
+
+  @ApiPropertyOptional({
+    description: 'Single business category. Deprecated — use `categories`.',
     example: 'travel agency',
+    deprecated: true,
   })
   @IsOptional()
   @IsString()

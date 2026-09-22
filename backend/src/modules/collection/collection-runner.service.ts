@@ -399,11 +399,17 @@ export class CollectionRunnerService {
    */
   buildQueries(job: CollectionJob): string[] {
     const where = [job.city, job.country].filter(Boolean).join(', ');
-    const category = (job.category || 'travel agency').trim();
 
-    const terms = [category, ...(job.keywords ?? []).map((k) => k.trim())].filter(
-      (t) => t.length > 0,
-    );
+    // Categories first, then free-text keywords. `category` (singular) is the legacy
+    // single-value column, read so jobs created before multi-select keep working.
+    const categories = (job.categories?.length ? job.categories : [job.category])
+      .filter((c): c is string => !!c && c.trim().length > 0)
+      .map((c) => c.trim());
+
+    const terms = [
+      ...(categories.length ? categories : ['travel agency']),
+      ...(job.keywords ?? []).map((k) => k.trim()),
+    ].filter((t) => t.length > 0);
 
     // De-duplicate case-insensitively while preserving order.
     const seen = new Set<string>();
