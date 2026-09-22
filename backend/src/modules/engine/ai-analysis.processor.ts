@@ -1,8 +1,9 @@
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
+import { Job, Queue } from 'bullmq';
 import { Message } from '../../entities/message.entity';
 import { CampaignContact } from '../../entities/campaign-contact.entity';
 import { Contact } from '../../entities/contact.entity';
@@ -10,6 +11,7 @@ import { Lead } from '../../entities/lead.entity';
 import { Campaign } from '../../entities/campaign.entity';
 import { AiAnalysis } from '../../entities/ai-analysis.entity';
 import { AiService } from '../ai/ai.service';
+import { AIAnalysisResult } from '../ai/ai.interfaces';
 import { SequenceService } from './sequence.service';
 
 interface AnalysisJobData {
@@ -56,6 +58,9 @@ export class AiAnalysisProcessor extends WorkerHost {
     private readonly analysisRepo: Repository<AiAnalysis>,
     private readonly aiService: AiService,
     private readonly sequenceService: SequenceService,
+    private readonly config: ConfigService,
+    @InjectQueue('message-send')
+    private readonly sendQueue: Queue,
   ) {
     super();
   }
@@ -130,11 +135,29 @@ export class AiAnalysisProcessor extends WorkerHost {
 
       this.logger.log(`AI analyzed: Intent=${analysis.intent}, Interest=${analysis.interest_level}, Confidence=${analysis.confidence}, Score=${analysis.lead_score} (${processingTime}ms)`);
 
-      // 6. Execute business rules
+      // 6. Generate and queue an AI reply.
+      //
+      // Deliberately BEFORE executeBusinessRules: that method flips mode to 'human'
+      // for high interest and for needs_human, and every downstream reply path bails
+      // on mode === 'human'. Running it first meant the most engaged prospects — the
+      // ones worth answering fastest — were the only ones who never got a reply.
+      // The reply itself still yields to a human when the model says it should.
+      const replyQueued = await this.tryAiReply({
+        message,
+        contactId,
+        campaignId,
+        campaignContactId,
+        analysis,
+        history,
+      });
+
+      // 7. Execute business rules
       await this.executeBusinessRules(analysis, contactId, campaignId, campaignContactId);
 
-      // 7. Check sequence triggers — after analysis, see if reply triggers next step
-      if (campaignContactId) {
+      // 8. Check sequence triggers — after analysis, see if reply triggers next step.
+      //    Skipped when the AI already answered, so a prospect never receives a
+      //    generated reply and a canned template for the same inbound message.
+      if (campaignContactId && !replyQueued) {
         try {
           await this.sequenceService.onAiAnalysisComplete(campaignContactId, {
             intent: analysis.intent,
@@ -160,6 +183,108 @@ export class AiAnalysisProcessor extends WorkerHost {
 
       throw err;
     }
+  }
+
+  /**
+   * Generate an AI reply and queue it for sending.
+   *
+   * Returns true when a reply was queued, so the caller can skip the canned-template
+   * sequence and avoid double-messaging the same inbound message.
+   *
+   * Every early return here is a deliberate decision to stay silent and let a human
+   * answer: replies disabled, an opted-out contact, an existing takeover, a model that
+   * asked for handover, or a low-confidence generation. Silence is the safe default —
+   * a wrong automated answer to a travel agency costs more than a slower human one.
+   */
+  private async tryAiReply(input: {
+    message: Message;
+    contactId: string;
+    campaignId?: string;
+    campaignContactId?: string;
+    analysis: AIAnalysisResult;
+    history: Message[];
+  }): Promise<boolean> {
+    const { message, contactId, campaignId, campaignContactId, analysis, history } = input;
+
+    // Kill switch, default off: enabling automated replies is always an explicit
+    // operator decision, never something that turns itself on after a deploy.
+    if (this.config.get<string>('AI_AUTO_REPLY_ENABLED') !== 'true') return false;
+
+    // Never reply to someone leaving, and never argue with an opt-out.
+    if (analysis.opt_out) return false;
+
+    const contact = await this.contactRepo.findOne({
+      where: { id: contactId },
+      relations: ['company'],
+    });
+    if (!contact || contact.is_opted_out || contact.is_suppressed) return false;
+
+    if (campaignContactId) {
+      const cc = await this.ccRepo.findOne({ where: { id: campaignContactId } });
+      if (cc?.mode === 'human') {
+        this.logger.log(`Skipping AI reply for CC ${campaignContactId}: human has taken over`);
+        return false;
+      }
+    }
+
+    const campaign = campaignId
+      ? await this.campaignRepo.findOne({ where: { id: campaignId } })
+      : null;
+
+    const reply = await this.aiService.generateReply(
+      message.body || '',
+      history.map((m) => ({
+        role: m.direction === 'outgoing' ? 'assistant' : 'user',
+        content: m.body || '',
+      })),
+      {
+        contactName: contact.name,
+        companyName: (contact as any).company?.name,
+        city: (contact as any).company?.city,
+        country: (contact as any).company?.country,
+        product: campaign?.product,
+        campaignName: campaign?.name,
+      },
+    );
+
+    if (!reply) return false;
+
+    // The model asking for a human, or being unsure, is the strongest available signal
+    // that this message should not be answered automatically.
+    if (reply.needsHuman || reply.confidence < 0.6) {
+      if (campaignContactId) {
+        await this.ccRepo.update(campaignContactId, { mode: 'human' as any });
+      }
+      this.logger.log(
+        `AI declined to auto-reply to contact ${contactId} ` +
+          `(needsHuman=${reply.needsHuman}, confidence=${reply.confidence}) — handed to a human`,
+      );
+      return false;
+    }
+
+    await this.sendQueue.add(
+      'send-ai-reply',
+      {
+        contactId,
+        campaignId,
+        campaignContactId,
+        body: reply.body,
+        mediaType: reply.mediaType,
+        mediaUrl: reply.mediaUrl,
+      },
+      {
+        // Short randomised pause. An instant answer is an unmistakable bot tell; a few
+        // seconds reads as a person picking up their phone. SIMULATE_TYPING on the
+        // gateway adds the "typing…" indicator on top of this.
+        delay: 4_000 + Math.floor(Math.random() * 11_000),
+        attempts: 2,
+        backoff: { type: 'fixed', delay: 30_000 },
+        removeOnComplete: true,
+      },
+    );
+
+    this.logger.log(`Queued AI reply to contact ${contactId}: "${reply.body.slice(0, 60)}…"`);
+    return true;
   }
 
   /**
@@ -293,11 +418,22 @@ export class AiAnalysisProcessor extends WorkerHost {
     try {
       const notifRepo = this.messageRepo.manager.getRepository('Notification');
 
+      // Resolve a human label once. Notification text previously interpolated the raw
+      // contact UUID, so the bell read "Contact 8f3a1c7e-… has opted out" — unusable
+      // at a glance. Prefer the person's name, fall back to their number.
+      const contact = await this.contactRepo.findOne({
+        where: { id: contactId },
+        relations: ['company'],
+      });
+      const who = contact?.name || contact?.whatsapp_number || 'Unknown contact';
+      const org = (contact as any)?.company?.name;
+      const label = org && org !== who ? `${who} (${org})` : who;
+
       if (analysis.opt_out) {
         await notifRepo.save(notifRepo.create({
           type: 'opt_out',
           title: 'Contact Opted Out',
-          message: `Contact ${contactId} has opted out of messaging`,
+          message: `${label} asked to stop receiving messages.`,
           metadata: { contactId, campaignId, campaignContactId },
           is_read: false,
         }));
@@ -310,7 +446,7 @@ export class AiAnalysisProcessor extends WorkerHost {
         await notifRepo.save(notifRepo.create({
           type: 'new_lead',
           title: 'New Lead Created',
-          message: `New lead from contact ${contactId} with interest level: ${analysis.interest_level}, score: ${analysis.lead_score}`,
+          message: `${label} replied with ${analysis.interest_level} interest (score ${analysis.lead_score}).`,
           metadata: { contactId, campaignId, interestLevel: analysis.interest_level, leadScore: analysis.lead_score },
           is_read: false,
         }));
@@ -319,7 +455,7 @@ export class AiAnalysisProcessor extends WorkerHost {
           await notifRepo.save(notifRepo.create({
             type: 'handover',
             title: 'Human Handover Required',
-            message: `Contact ${contactId} needs human attention — interest: ${analysis.interest_level}`,
+            message: `${label} needs a human reply — ${analysis.interest_level} interest.`,
             metadata: { contactId, campaignId, campaignContactId, reason: 'high_interest' },
             is_read: false,
           }));

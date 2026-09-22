@@ -2,7 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { AIAnalysisResult } from './ai.interfaces';
+import { AIAnalysisResult, AIReplyResult } from './ai.interfaces';
+import {
+  buildReplySystemPrompt,
+  truncateAtSentence,
+  MAX_REPLY_CHARS,
+  type ReplyContext,
+} from './reply-prompt';
 
 /**
  * AI PROVIDER — Multi-model with automatic failover
@@ -129,6 +135,87 @@ export class AiService {
     }
 
     throw new Error('All AI providers failed');
+  }
+
+  /**
+   * Generate a reply to an inbound WhatsApp message.
+   *
+   * Distinct from `analyzeMessage`, which only classifies: this composes the actual
+   * text a prospect will read, so it is deliberately conservative. The prompt forbids
+   * inventing prices, dates and availability — a travel enquiry answered with a
+   * fabricated quote is worse than one escalated to a human — and any low-confidence
+   * or commercial question sets `needs_human` so a person takes over.
+   *
+   * Returns null when no provider is available, so callers fall back to their
+   * pre-written templates rather than going silent.
+   */
+  async generateReply(
+    messageBody: string,
+    conversationHistory: { role: string; content: string }[] = [],
+    context: ReplyContext = {},
+  ): Promise<AIReplyResult | null> {
+    if (!this.providers.some((p) => p.isAvailable())) {
+      this.logger.warn('No AI provider available — cannot generate a reply');
+      return null;
+    }
+
+    const system = buildReplySystemPrompt(context);
+    const history = conversationHistory
+      .slice(-8)
+      .map((m) => `${m.role === 'assistant' ? 'Us' : 'Them'}: ${m.content}`)
+      .join('\n');
+
+    const user = `Conversation so far:\n${history || '(none)'}\n\nTheir latest message:\n"${messageBody}"\n\nCompose the reply.`;
+
+    try {
+      const raw = await this.callWithFailover(system, user, true);
+      return this.parseReply(raw);
+    } catch (err) {
+      this.logger.error(`Reply generation failed: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Parse and sanitise a generated reply.
+   *
+   * Everything is validated rather than trusted: an over-long body gets truncated at a
+   * sentence boundary (WhatsApp renders walls of text badly and it reads as automated),
+   * and a media URL is only accepted if it is a plausible http(s) link, because the
+   * value is handed to the gateway to fetch.
+   */
+  private parseReply(raw: string): AIReplyResult | null {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim());
+    } catch {
+      this.logger.warn('Reply generation returned unparseable JSON');
+      return null;
+    }
+
+    const body = typeof parsed.body === 'string' ? parsed.body.trim() : '';
+    if (!body) return null;
+
+    const mediaType = ['image', 'video', 'document'].includes(parsed.media_type)
+      ? parsed.media_type
+      : null;
+    const mediaUrl =
+      typeof parsed.media_url === 'string' && /^https?:\/\/\S+$/i.test(parsed.media_url.trim())
+        ? parsed.media_url.trim()
+        : null;
+
+    return {
+      body: truncateAtSentence(body, MAX_REPLY_CHARS),
+      // Media only counts when both halves are present; a type without a URL would
+      // fall through the processor's send branch and deliver nothing.
+      mediaType: mediaType && mediaUrl ? mediaType : null,
+      mediaUrl: mediaType && mediaUrl ? mediaUrl : null,
+      needsHuman: parsed.needs_human === true,
+      confidence:
+        typeof parsed.confidence === 'number'
+          ? Math.min(Math.max(parsed.confidence, 0), 1)
+          : 0.5,
+    };
   }
 
   /**

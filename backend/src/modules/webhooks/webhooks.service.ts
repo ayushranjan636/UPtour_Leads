@@ -134,7 +134,7 @@ export class WebhooksService {
       const sessionId: string | null = data.sessionId ?? data.session_id ?? null;
 
       const phone = this.normalizeJidToPhone(senderJid);
-      this.logger.log(`Incoming message from ${phone} (JID: ${senderJid})`);
+      this.logger.log(`Incoming message from ${phone ?? senderJid} (JID: ${senderJid})`);
 
       // Ignore group and broadcast traffic.
       //
@@ -147,14 +147,27 @@ export class WebhooksService {
         return;
       }
 
+      // Match on the chat id as well as the phone: an `@lid` sender has no usable
+      // number, so the JID is the only stable key we can link it by.
       let contact = await this.contactRepo.findOne({
-        where: [
-          { whatsapp_number: phone },
-          { whatsapp_chat_id: senderJid },
-        ],
+        where: phone
+          ? [{ whatsapp_number: phone }, { whatsapp_chat_id: senderJid }]
+          : [{ whatsapp_chat_id: senderJid }],
       });
 
       if (!contact) {
+        // Without a dialable number we cannot start an outreach conversation, and
+        // storing the raw JID as both name and number is what produced contacts called
+        // "+263986490642451@lid". Log the message against no contact rather than invent
+        // one; a genuine prospect replying from a campaign always resolves above.
+        if (!phone) {
+          this.logger.log(
+            `Ignoring inbound from ${senderJid}: privacy-masked id with no dialable number ` +
+              'and no existing contact to attach it to',
+          );
+          return;
+        }
+
         this.logger.log(`Creating new contact for ${phone}`);
         contact = this.contactRepo.create({
           name: phone,
@@ -404,9 +417,23 @@ export class WebhooksService {
     }
   }
 
-  private normalizeJidToPhone(jid: string): string {
-    const raw = jid.replace(/@c\.us$/, '').replace(/@s\.whatsapp\.net$/, '');
-    return raw.startsWith('+') ? raw : `+${raw}`;
+  /**
+   * Convert a WhatsApp JID to a storable phone number.
+   *
+   * Returns null when the JID carries no real phone number. `@lid` is WhatsApp's
+   * privacy-preserving "linked id": the digits are an internal identifier, NOT a
+   * dialable number, so treating them as one produced contacts literally named
+   * `+263986490642451@lid` that could never be messaged back. Those must be recognised
+   * rather than coerced.
+   */
+  private normalizeJidToPhone(jid: string): string | null {
+    if (/@lid$/i.test(jid)) return null;
+    const raw = jid.replace(/@c\.us$/i, '').replace(/@s\.whatsapp\.net$/i, '');
+    const digits = raw.replace(/[^\d]/g, '');
+    // A real international number is at least 8 digits; anything shorter (e.g. "0")
+    // is a gateway artefact, not a contact.
+    if (digits.length < 8) return null;
+    return `+${digits}`;
   }
 
   /**

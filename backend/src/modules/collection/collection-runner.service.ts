@@ -253,6 +253,13 @@ export class CollectionRunnerService {
       ? normalizePhone(place.phone, this.regionHint(job.country))
       : null;
 
+    // Structured address components, defaulted so a response without them cannot
+    // throw. Every field is independently nullable — coverage varies by country.
+    const loc = place.location ?? {
+      country: null, countryCode: null, state: null,
+      district: null, city: null, postalCode: null,
+    };
+
     const base = {
       job_id: job.id,
       run_date: new Date(),
@@ -262,11 +269,15 @@ export class CollectionRunnerService {
       // Prefer what Google actually returned over what the operator typed. A
       // country-wide job has no city input at all, and the operator's free-text
       // spelling ("japan", "UAE ") is unreliable for filtering.
-      country: place.location.country ?? job.country,
-      country_code: place.location.countryCode ?? (null as any),
-      state_region: place.location.state ?? (null as any),
-      district: place.location.district ?? (null as any),
-      city: place.location.city ?? job.city ?? (null as any),
+      //
+      // `location` is defaulted rather than assumed: a provider response predating
+      // addressComponents (or any future provider that omits it) would otherwise
+      // throw here and abort the whole collection run mid-batch.
+      country: loc.country ?? job.country,
+      country_code: loc.countryCode ?? (null as any),
+      state_region: loc.state ?? (null as any),
+      district: loc.district ?? (null as any),
+      city: loc.city ?? job.city ?? (null as any),
       address: place.address ?? (null as any),
       website: place.website ?? (null as any),
       google_place_id: place.placeId,
@@ -307,7 +318,7 @@ export class CollectionRunnerService {
         state_region: base.state_region,
         district: base.district,
         city: base.city,
-        postal_code: place.location.postalCode ?? (null as any),
+        postal_code: loc.postalCode ?? (null as any),
         address: place.address ?? (null as any),
         website: place.website ?? (null as any),
         agency_type: place.primaryType ?? job.category ?? (null as any),

@@ -9,6 +9,7 @@ import { Campaign } from '../../entities/campaign.entity';
 import { Message } from '../../entities/message.entity';
 import { MessageTemplate } from '../../entities/message-template.entity';
 import { OpenwaService, toChatId } from '../openwa/openwa.service';
+import { spin } from '../../common/utils/spintax.util';
 import { FollowupSchedulerService } from './followup-scheduler.service';
 
 interface SendJobData {
@@ -17,6 +18,19 @@ interface SendJobData {
   contactId: string;
   sessionId: string;
   templateId?: string;
+}
+
+/**
+ * Payload for an AI-composed reply. No templateId: the body is generated, already
+ * sanitised and length-capped by AiService, and the contact need not be in a campaign.
+ */
+interface AiReplyJobData {
+  contactId: string;
+  campaignId?: string;
+  campaignContactId?: string;
+  body: string;
+  mediaType: 'image' | 'video' | 'document' | null;
+  mediaUrl: string | null;
 }
 
 /**
@@ -57,6 +71,12 @@ export class MessageSendProcessor extends WorkerHost {
   }
 
   async process(job: Job<SendJobData>) {
+    // AI replies are a different shape: there is no template, the body is already
+    // composed, and the contact may not belong to any campaign.
+    if (job.name === 'send-ai-reply') {
+      return this.processAiReply(job as unknown as Job<AiReplyJobData>);
+    }
+
     const { campaignContactId, campaignId, contactId, sessionId } = job.data;
     const startTime = Date.now();
 
@@ -200,6 +220,77 @@ export class MessageSendProcessor extends WorkerHost {
   }
 
   /**
+   * Send an AI-generated reply.
+   *
+   * Kept separate from the campaign path because the two differ in every respect that
+   * matters: no template lookup, a body that is already composed and sanitised, and a
+   * contact that may have no campaign at all (an inbound message from someone who was
+   * never enrolled still deserves an answer).
+   *
+   * Re-checks opt-out and suppression at send time: the job sat in a delay queue, and
+   * the contact may have opted out in the meantime.
+   */
+  private async processAiReply(job: Job<AiReplyJobData>) {
+    const { contactId, campaignContactId, body, mediaType, mediaUrl } = job.data;
+    const startTime = Date.now();
+
+    const contact = await this.contactRepo.findOne({
+      where: { id: contactId },
+      relations: ['company'],
+    });
+    if (!contact) throw new Error(`Contact ${contactId} not found`);
+
+    if (contact.is_opted_out || contact.is_suppressed) {
+      this.logger.log(`Skipped AI reply to ${contactId}: opted out or suppressed`);
+      return { skipped: true, reason: 'opted_out_or_suppressed' };
+    }
+
+    // A human taking over between queue and send must win.
+    if (campaignContactId) {
+      const cc = await this.ccRepo.findOne({ where: { id: campaignContactId } });
+      if (cc?.mode === 'human') {
+        this.logger.log(`Skipped AI reply to ${contactId}: human took over`);
+        return { skipped: true, reason: 'human_takeover' };
+      }
+    }
+
+    const chatId = toChatId(contact.whatsapp_number, contact.whatsapp_chat_id);
+    const sessionId = await this.openwa.resolveSessionId(null);
+
+    let result: any;
+    if (mediaType === 'image' && mediaUrl) {
+      result = await this.openwa.sendImage(sessionId, chatId, mediaUrl, body);
+    } else if (mediaType === 'video' && mediaUrl) {
+      result = await this.openwa.sendVideo(sessionId, chatId, mediaUrl, body);
+    } else if (mediaType === 'document' && mediaUrl) {
+      result = await this.openwa.sendDocument(sessionId, chatId, mediaUrl, 'document.pdf', body);
+    } else {
+      result = await this.openwa.sendText(sessionId, chatId, body);
+    }
+
+    await this.messageRepo.save(
+      this.messageRepo.create({
+        campaign_contact_id: campaignContactId ?? (null as any),
+        contact_id: contactId,
+        direction: 'outgoing' as any,
+        type: (mediaType ?? 'text') as any,
+        body,
+        media_url: mediaUrl ?? (null as any),
+        openwa_message_id: result?.messageId ?? result?.id ?? null,
+        openwa_session_id: sessionId,
+        status: 'sent' as any,
+        sent_at: new Date(),
+        // Marks this as machine-composed rather than a template or a human send, so
+        // the conversation view and any audit can tell them apart.
+        is_ai_generated: true,
+      }),
+    );
+
+    this.logger.log(`AI reply sent to ${contactId} in ${Date.now() - startTime}ms`);
+    return { success: true };
+  }
+
+  /**
    * Replace template variables with actual contact/campaign data.
    * Supports: {{contact_name}}, {{company_name}}, {{country}}, {{state}},
    * {{district}}, {{city}}, {{product}}, {{campaign_name}}
@@ -210,7 +301,12 @@ export class MessageSendProcessor extends WorkerHost {
     // Requires the caller to have loaded `contact.company` — see process().
     const company = (contact as any).company;
 
-    return body
+    // Spin first, then substitute. Resolving spintax before merge fields means a
+    // variant can itself contain a placeholder, and the placeholder protection in
+    // spin() guarantees the fields survive the pass.
+    const spun = spin(body);
+
+    return spun
       .replace(/\{\{contact_name\}\}/g, contact.name || 'there')
       .replace(/\{\{company_name\}\}/g, company?.name || '')
       .replace(/\{\{country\}\}/g, company?.country || '')

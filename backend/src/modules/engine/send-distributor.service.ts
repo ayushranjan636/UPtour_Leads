@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -51,6 +52,16 @@ import {
 export class SendDistributorService {
   private readonly logger = new Logger(SendDistributorService.name);
 
+  /**
+   * Bounds for the randomised inter-message gap, in milliseconds.
+   *
+   * Configurable via HUMANIZED_DELAY_MIN_MS / HUMANIZED_DELAY_MAX_MS. Defaults of
+   * 45s-180s follow the safe-sending guidance for unofficial WhatsApp clients: a few
+   * messages a minute per session is sustainable, bursts are not.
+   */
+  private readonly humanDelayMinMs: number;
+  private readonly humanDelayMaxMs: number;
+
   private static readonly VERIFY_CACHE_TTL = 86400; // 24 hours
   private static readonly DAILY_COUNT_TTL = 86400;  // 24 hours
 
@@ -65,7 +76,33 @@ export class SendDistributorService {
     private readonly sendQueue: Queue,
     private readonly openwa: OpenwaService,
     private readonly redis: RedisService,
-  ) {}
+    private readonly config: ConfigService,
+  ) {
+    this.humanDelayMinMs = this.readDelayMs('HUMANIZED_DELAY_MIN_MS', 45_000);
+    this.humanDelayMaxMs = this.readDelayMs('HUMANIZED_DELAY_MAX_MS', 180_000);
+
+    if (this.humanDelayMaxMs <= this.humanDelayMinMs) {
+      // A max at or below the min would collapse the distribution back to a constant
+      // gap — the exact pattern this is meant to avoid — so refuse it loudly.
+      throw new Error(
+        `HUMANIZED_DELAY_MAX_MS (${this.humanDelayMaxMs}) must be greater than ` +
+          `HUMANIZED_DELAY_MIN_MS (${this.humanDelayMinMs}).`,
+      );
+    }
+
+    this.logger.log(
+      `Humanised send delay: ${Math.round(this.humanDelayMinMs / 1000)}-` +
+        `${Math.round(this.humanDelayMaxMs / 1000)}s, drawn per message`,
+    );
+  }
+
+  /** Read a positive integer millisecond setting, falling back to a safe default. */
+  private readDelayMs(key: string, fallback: number): number {
+    const raw = this.config.get<string>(key);
+    const parsed = parseInt(raw ?? '', 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return parsed;
+  }
 
   /**
    * Runs every 60 seconds. For each active campaign:
@@ -116,9 +153,12 @@ export class SendDistributorService {
 
     if (pendingContacts.length === 0) return;
 
-    // 5. Verify and queue with distributed delays
+    // 5. Verify and queue with humanised, non-uniform delays
     const delayPerMessage = this.calculateDelay(campaign, dailyLimit);
     let queuedCount = 0;
+    // Accumulated offset for this batch. Each message adds its own randomly drawn
+    // gap, so the queue has no constant period for WhatsApp to fingerprint.
+    let cumulativeDelay = 0;
 
     for (let i = 0; i < pendingContacts.length; i++) {
       const cc = pendingContacts[i];
@@ -137,7 +177,12 @@ export class SendDistributorService {
         continue;
       }
 
-      const delay = queuedCount * delayPerMessage + this.jitter(delayPerMessage);
+      // First message of a cycle goes out promptly; every later one waits a freshly
+      // drawn gap, so spacing within the batch is irregular by construction.
+      if (queuedCount > 0) {
+        cumulativeDelay += this.humanizedGap(delayPerMessage);
+      }
+      const delay = cumulativeDelay;
 
       // Atomically claim this row before enqueueing. The conditional UPDATE is
       // the lock: if a concurrent tick already moved it out of `pending`, the
@@ -303,27 +348,54 @@ export class SendDistributorService {
   }
 
   /**
-   * Calculate delay between messages in milliseconds.
-   * 
+   * Base spacing between messages, before randomisation.
+   *
+   * Spreads the daily allowance across the send window so a campaign finishes near
+   * the end of its window rather than blasting up front.
+   *
    * Examples:
    *   10 contacts / 9hr window = 54 min between = 3,240,000ms
    *   100 contacts / 9hr window = 5.4 min between = 324,000ms
-   *   500 contacts / 9hr window = 1.08 min between = 64,800ms (capped at 30s min)
+   *   500 contacts / 9hr window = 1.08 min between = 64,800ms
    */
   private calculateDelay(campaign: Campaign, dailyLimit: number): number {
     const windowMs = this.getSendWindowMinutes(campaign) * 60 * 1000;
     const delayMs = Math.floor(windowMs / dailyLimit);
 
-    // Minimum 30 seconds between messages (WhatsApp safety)
-    return Math.max(delayMs, 30000);
+    // Never tighter than the humanised minimum, whatever the arithmetic says.
+    return Math.max(delayMs, this.humanDelayMinMs);
   }
 
   /**
-   * Add ±20% random jitter to avoid predictable patterns.
+   * Randomised gap to the next message.
+   *
+   * A constant interval is the single most machine-like signal a sender can emit —
+   * WhatsApp's anti-abuse systems look for exactly that regularity. Every gap is
+   * therefore drawn fresh from a uniform distribution rather than derived from a
+   * fixed base, so no two sends are evenly spaced and the sequence has no period.
+   *
+   * Two regimes:
+   *  - When the pacing interval fits inside the humanised band, draw uniformly from
+   *    [HUMANIZED_DELAY_MIN_MS, HUMANIZED_DELAY_MAX_MS] (default 45s-180s).
+   *  - When pacing demands a wider spread (a small audience across a long window),
+   *    draw from ±25% of that interval instead, so the campaign still fills its
+   *    window instead of finishing hours early.
+   *
+   * Replaces a fixed `base + ±20%` jitter, which left the mean exactly on the base
+   * and so still produced a detectable rhythm.
    */
-  private jitter(baseDelay: number): number {
-    const variance = baseDelay * 0.2;
-    return Math.floor(Math.random() * variance * 2 - variance);
+  private humanizedGap(pacingDelayMs: number): number {
+    const min = this.humanDelayMinMs;
+    const max = this.humanDelayMaxMs;
+
+    if (pacingDelayMs <= max) {
+      return min + Math.floor(Math.random() * (max - min + 1));
+    }
+
+    const spread = pacingDelayMs * 0.25;
+    const low = Math.max(min, Math.floor(pacingDelayMs - spread));
+    const high = Math.floor(pacingDelayMs + spread);
+    return low + Math.floor(Math.random() * (high - low + 1));
   }
 
   /**

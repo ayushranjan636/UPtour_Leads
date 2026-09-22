@@ -46,6 +46,14 @@ export class Message {
   @Column({ nullable: true })
   media_url: string;
 
+  /**
+   * True when the body was composed by the LLM rather than a template or a human.
+   * Lets the conversation view label automated replies and makes it possible to audit
+   * what the assistant said on the account's behalf.
+   */
+  @Column({ default: false })
+  is_ai_generated: boolean;
+
   @Column({ nullable: true })
   openwa_message_id: string;
 
