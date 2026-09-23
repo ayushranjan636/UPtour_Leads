@@ -16,6 +16,11 @@ import { ContactsService } from './contacts.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
 import { QueryContactDto } from './dto/query-contact.dto';
+import {
+  BulkContactIdsDto,
+  BulkGroupDto,
+  BulkVerifyDto,
+} from './dto/bulk-contacts.dto';
 
 @ApiTags('Contacts')
 @ApiBearerAuth()
@@ -44,6 +49,18 @@ export class ContactsController {
     return this.svc.locationFacets({ country, state_region });
   }
 
+  @Get('datasets')
+  @ApiOperation({
+    summary: 'Datasets a campaign audience can be built from',
+    description:
+      'Collection jobs and CSV imports that produced at least one reachable contact, ' +
+      'with counts. Pass the chosen ids to /contacts (or the campaign audience filter) ' +
+      'as collection_job_ids / import_file_ids to target exactly one scrape or upload.',
+  })
+  datasets() {
+    return this.svc.listDatasets();
+  }
+
   @Get('count')
   @ApiOperation({
     summary: 'Count contacts matching a filter',
@@ -53,6 +70,58 @@ export class ContactsController {
   })
   async count(@Query() query: QueryContactDto) {
     return { count: await this.svc.countFiltered(query) };
+  }
+
+  @Get('groups')
+  @ApiOperation({
+    summary: 'Contact groups in use',
+    description:
+      'Distinct group labels with reachable-contact counts. Groups are stored as contact ' +
+      'tags, so a contact can belong to several.',
+  })
+  groups() {
+    return this.svc.listGroups();
+  }
+
+  @Post('bulk/group')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Add a group label to many contacts',
+    description: 'Idempotent — contacts already in the group are skipped.',
+  })
+  bulkAddGroup(@Body() dto: BulkGroupDto) {
+    return this.svc.bulkAddGroup(dto.contactIds, dto.group);
+  }
+
+  @Post('bulk/ungroup')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Remove a group label from many contacts' })
+  bulkRemoveGroup(@Body() dto: BulkGroupDto) {
+    return this.svc.bulkRemoveGroup(dto.contactIds, dto.group);
+  }
+
+  @Post('bulk/verify')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Verify many numbers against WhatsApp',
+    description:
+      'Checks each number, caching results for 24h. Numbers not on WhatsApp are ' +
+      'suppressed so campaigns skip them instead of wasting sends.',
+  })
+  bulkVerify(@Body() dto: BulkVerifyDto) {
+    return this.svc.verifyBatch(dto.contactIds, dto.sessionId);
+  }
+
+  @Post('bulk/delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Permanently delete many contacts',
+    description:
+      'Each contact is removed with its campaign, message and lead history. Failures ' +
+      'are reported per id rather than aborting the batch. This cannot be undone.',
+  })
+  bulkDelete(@Body() dto: BulkContactIdsDto) {
+    return this.svc.bulkDelete(dto.contactIds);
   }
 
   @Get(':id')
