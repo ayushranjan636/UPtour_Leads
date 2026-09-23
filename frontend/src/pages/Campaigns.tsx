@@ -17,6 +17,7 @@ import {
   Spin,
   Empty,
   Alert,
+  Switch,
   message,
 } from 'antd';
 import {
@@ -28,6 +29,7 @@ import {
   PauseCircleOutlined,
   RocketOutlined,
   TeamOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import PageHeader from '../components/PageHeader';
@@ -203,6 +205,10 @@ export default function Campaigns() {
         product: values.product,
         target_country: values.target_country,
         daily_send_limit: values.daily_send_limit,
+        // Nullable server-side, where null means "follow the global switch". Sent as an
+        // explicit boolean so the choice made in the form is the one stored; it can still
+        // only ever *restrict* the assistant, never enable it past the global switch.
+        ai_auto_reply_enabled: values.ai_auto_reply_enabled !== false,
       };
       if (values.send_window) {
         payload.send_window_start = values.send_window[0]?.format('HH:mm');
@@ -539,6 +545,9 @@ function CampaignModal({
         // the column itself defaults to 09:00-18:00.)
         initialValues={{
           send_window: [dayjs('09:00', 'HH:mm'), dayjs('18:00', 'HH:mm')],
+          // Matches the column default. Subordinate to the global switch either way, so
+          // "allowed" here never means "on" by itself.
+          ai_auto_reply_enabled: true,
         }}
       >
         <Form.Item name="name" label="Campaign Name" rules={[{ required: true }]}>
@@ -725,6 +734,34 @@ function CampaignModal({
         <Form.Item name="send_window_timezone" label="Timezone">
           <Input placeholder="e.g. Asia/Tokyo" />
         </Form.Item>
+
+        {/* ── AI auto-reply ───────────────────────────────
+            Opt-out only: the global switch in Settings → AI Assistant decides whether the
+            assistant runs at all, and this can only take this campaign out of it. Stated
+            in the caption so nobody reads "allowed" as "the assistant is now answering". */}
+        <Form.Item
+          name="ai_auto_reply_enabled"
+          valuePropName="checked"
+          label="AI auto-reply for this campaign"
+          style={{ marginBottom: space.xs }}
+        >
+          <Switch
+            checkedChildren="On"
+            unCheckedChildren="Off"
+            aria-label="Allow AI auto-reply for this campaign"
+          />
+        </Form.Item>
+        <Flex align="flex-start" gap={space.sm}>
+          <RobotOutlined
+            style={{ color: color.textSecondary, fontSize: font.size.footnote, marginTop: 2 }}
+          />
+          <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+            Subordinate to the global switch in Settings → AI Assistant. A campaign cannot
+            turn the assistant on by itself — leaving this on only means this campaign is
+            included when the global switch is on. Turn it off to have people handle every
+            reply here.
+          </Text>
+        </Flex>
       </Form>
     </Modal>
   );

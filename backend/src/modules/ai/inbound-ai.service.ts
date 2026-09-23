@@ -69,6 +69,9 @@ export type ReplyOutcome = {
     | 'error';
 };
 
+/** Runtime override for the global auto-reply switch; absent means use the env default. */
+const AI_AUTO_REPLY_OVERRIDE_KEY = 'settings:ai-auto-reply-enabled';
+
 @Injectable()
 export class InboundAiService {
   private readonly logger = new Logger(InboundAiService.name);
@@ -311,7 +314,7 @@ export class InboundAiService {
 
     // Global kill switch, default off: automated replies are always an explicit
     // operator decision and must never switch themselves on after a deploy.
-    if (!this.isAutoReplyEnabledGlobally()) {
+    if (!(await this.isAutoReplyEnabledGlobally())) {
       return { queued: false, reason: 'disabled_globally' };
     }
 
@@ -437,10 +440,58 @@ export class InboundAiService {
     return { queued: true, reason: 'queued' };
   }
 
-  /** Global kill switch. Absent or anything but an explicit opt-in means off. */
-  private isAutoReplyEnabledGlobally(): boolean {
+  /**
+   * Global kill switch, runtime-overridable.
+   *
+   * The env var is the deploy-time default, but an operator needs to stop the assistant
+   * *now* — mid-campaign, if it says something wrong — and editing `.env` plus restarting
+   * the server is far too slow for that. A Redis override therefore wins when present,
+   * and absence of any setting still means off: auto-replying to real prospects is never
+   * something to fall into by default.
+   */
+  private async isAutoReplyEnabledGlobally(): Promise<boolean> {
+    const override = await this.redis
+      ?.get<string>(AI_AUTO_REPLY_OVERRIDE_KEY)
+      // A Redis outage must not silently flip the assistant to the opposite of what the
+      // operator chose, so fall through to the deploy-time default.
+      .catch(() => null);
+
+    if (override === 'true' || override === 'false') return override === 'true';
+
     const raw = this.config?.get<string>('AI_AUTO_REPLY_ENABLED');
     return String(raw ?? '').trim().toLowerCase() === 'true';
+  }
+
+  /** Read the effective switch plus where the value came from, for the settings UI. */
+  async getAutoReplySetting(): Promise<{
+    enabled: boolean;
+    source: 'override' | 'env';
+    envDefault: boolean;
+  }> {
+    const override = await this.redis
+      ?.get<string>(AI_AUTO_REPLY_OVERRIDE_KEY)
+      .catch(() => null);
+    const envDefault =
+      String(this.config?.get<string>('AI_AUTO_REPLY_ENABLED') ?? '')
+        .trim()
+        .toLowerCase() === 'true';
+
+    const isOverride = override === 'true' || override === 'false';
+    return {
+      enabled: isOverride ? override === 'true' : envDefault,
+      source: isOverride ? 'override' : 'env',
+      envDefault,
+    };
+  }
+
+  /** Turn the assistant on or off without a redeploy. */
+  async setAutoReplyEnabled(enabled: boolean): Promise<{ enabled: boolean }> {
+    // No TTL: a deliberate "off" must not quietly expire back to on after some interval.
+    await this.redis.set(AI_AUTO_REPLY_OVERRIDE_KEY, String(enabled), 0);
+    this.logger.warn(
+      `AI auto-reply ${enabled ? 'ENABLED' : 'DISABLED'} at runtime by an operator`,
+    );
+    return { enabled };
   }
 
   /** Oldest-first window of the conversation with this contact. */

@@ -9,6 +9,7 @@ import { CampaignContact } from '../../entities/campaign-contact.entity';
 import { Lead } from '../../entities/lead.entity';
 import { Deal } from '../../entities/deal.entity';
 import { AiService } from './ai.service';
+import { AiController } from './ai.controller';
 import { InboundAiService } from './inbound-ai.service';
 
 @Module({
@@ -19,6 +20,7 @@ import { InboundAiService } from './inbound-ai.service';
     // they inherit its humanised pacing instead of going straight to the gateway.
     BullModule.registerQueue({ name: 'message-send' }),
   ],
+  controllers: [AiController],
   providers: [AiService, InboundAiService],
   exports: [AiService, InboundAiService],
 })

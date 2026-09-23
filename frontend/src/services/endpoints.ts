@@ -232,13 +232,84 @@ export const workflowAPI = {
 };
 
 /* ── Engine ───────────────────────────────────────── */
+
+/** One hour-aligned bar of the distribution plan. */
+export interface DistributionPlanSlot {
+  /** Start of the hour as HH:mm in the campaign's local wall clock. */
+  time: string;
+  count: number;
+}
+
+/**
+ * `GET /engine/distribution-plan`.
+ *
+ * The campaign-aware form describes real recipients: `planned_messages` is
+ * min(pending contacts, daily limit), and the slots are a simulation of the sender's
+ * own randomised pacing rather than an even split.
+ */
+export interface DistributionPlan {
+  daily_limit: number;
+  /** Real pending recipients, or null for a hypothetical limit preview. */
+  pending_contacts: number | null;
+  planned_messages: number;
+  /** Of those, how many the send window can pace today. */
+  messages_today: number;
+  spillover_messages: number;
+  fits_in_window: boolean;
+  estimated_days: number;
+  send_window: string;
+  window_hours: number;
+  messages_per_hour: number;
+  gap_between_messages: string;
+  gap_range_seconds: { min: number; max: number };
+  estimated_completion: string;
+  estimated_finish: string | null;
+  slots: DistributionPlanSlot[];
+  safety_rating: 'SAFE' | 'MODERATE' | 'AGGRESSIVE';
+  recommendation: string;
+  notes: string[];
+}
+
 export const engineAPI = {
   // Backend reads snake_case @Query() params — see engine.controller.ts.
-  getDistributionPlan: (params: {
-    daily_limit: number;
-    window_start: string;
-    window_end: string;
-  }) => api.get('/engine/distribution-plan', { params }),
+  //
+  // Prefer `campaign_id`: the server resolves the daily limit, window and pending
+  // recipient count itself, so the plan cannot promise sends that will not happen.
+  // The `daily_limit` form remains for previewing a quantity before an audience exists.
+  getDistributionPlan: (
+    params:
+      | { campaign_id: string }
+      | { daily_limit: number; window_start: string; window_end: string },
+  ) => api.get<DistributionPlan>('/engine/distribution-plan', { params }),
+};
+
+/* ── AI assistant ─────────────────────────────────── */
+
+/**
+ * State of the global AI auto-reply switch, from `GET /ai/auto-reply`.
+ *
+ * `enabled` is the value in force right now. `source` says where it came from:
+ * `'override'` means an operator set it explicitly at runtime, `'env'` means nobody has,
+ * so the deploy-time default (`envDefault`) applies. The UI needs the distinction because
+ * "off because someone turned it off" and "off because the server ships it off" are
+ * different facts, and only the first one represents a decision.
+ */
+export interface AiAutoReplySetting {
+  enabled: boolean;
+  source: 'override' | 'env';
+  envDefault: boolean;
+}
+
+export const aiAPI = {
+  /** Effective auto-reply state plus its provenance. */
+  getAutoReply: () => api.get<AiAutoReplySetting>('/ai/auto-reply'),
+  /**
+   * Turns the assistant on or off for every campaign at once. Applies immediately with
+   * no redeploy and persists until changed, so enabling it starts real autonomous
+   * WhatsApp replies — confirm with the operator before calling with `true`.
+   */
+  setAutoReply: (enabled: boolean) =>
+    api.put<{ enabled: boolean }>('/ai/auto-reply', { enabled }),
 };
 
 /* ── Messaging gateway (WhatsApp) ─────────────────────

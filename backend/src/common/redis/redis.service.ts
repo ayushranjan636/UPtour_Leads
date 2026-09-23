@@ -48,9 +48,21 @@ export class RedisService implements OnModuleDestroy {
   }
 
   /** Set with TTL in seconds */
+  /**
+   * Store a value, optionally with an expiry.
+   *
+   * `ttlSeconds <= 0` persists the key indefinitely. Redis rejects `EX 0`, and some
+   * settings — an operator deliberately disabling AI auto-reply, say — must not quietly
+   * expire back to their previous value after a few minutes.
+   */
   async set(key: string, value: any, ttlSeconds = 300): Promise<void> {
     try {
-      await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+      const payload = JSON.stringify(value);
+      if (ttlSeconds > 0) {
+        await this.client.set(key, payload, 'EX', ttlSeconds);
+      } else {
+        await this.client.set(key, payload);
+      }
     } catch { /* silent fallback */ }
   }
 

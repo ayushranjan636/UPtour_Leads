@@ -20,6 +20,7 @@ import {
   Popconfirm,
   Alert,
   Divider,
+  Switch,
 } from 'antd';
 import {
   PlayCircleOutlined,
@@ -36,6 +37,7 @@ import {
   WarningOutlined,
   ClockCircleOutlined,
   TeamOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
@@ -50,6 +52,9 @@ import {
   templatesAPI,
   contactsAPI,
   engineAPI,
+  aiAPI,
+  type AiAutoReplySetting,
+  type DistributionPlan,
 } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
@@ -66,6 +71,8 @@ interface CampaignData {
   daily_send_limit?: number;
   send_window_start?: string;
   send_window_end?: string;
+  /** null means "not set" — the campaign simply follows the global switch. */
+  ai_auto_reply_enabled?: boolean | null;
 }
 
 interface CampaignStats {
@@ -131,11 +138,6 @@ interface Template {
   trigger_condition?: string;
 }
 
-interface DistPlanSlot {
-  time: string;
-  count: number;
-}
-
 export default function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
   const [campaign, setCampaign] = useState<CampaignData | null>(null);
@@ -144,8 +146,16 @@ export default function CampaignDetail() {
   const [contactsTotal, setContactsTotal] = useState(0);
   const [contactsPage, setContactsPage] = useState(1);
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [distPlan, setDistPlan] = useState<DistPlanSlot[]>([]);
+  const [distPlan, setDistPlan] = useState<DistributionPlan | null>(null);
   const [loading, setLoading] = useState(true);
+
+  /* ── AI auto-reply ─────────────────────────────────
+   * The campaign's own switch, plus the global one it is subordinate to. Both are needed
+   * to say anything truthful here: "allowed" on the campaign means nothing on its own if
+   * the global switch is off, so the global value is fetched to label the state correctly.
+   */
+  const [globalAi, setGlobalAi] = useState<AiAutoReplySetting | null>(null);
+  const [savingAi, setSavingAi] = useState(false);
 
   /* ── Audience builder ──────────────────────────────
    * Two ways in: a server-resolved filter (no size ceiling) and hand-picking.
@@ -206,11 +216,11 @@ export default function CampaignDetail() {
       setTemplates(Array.isArray(templRes.data) ? templRes.data : []);
 
       try {
-        const limit = campRes.data?.daily_send_limit ?? 100;
-        const start = campRes.data?.send_window_start ?? '09:00';
-        const end = campRes.data?.send_window_end ?? '18:00';
-        const dpRes = await engineAPI.getDistributionPlan({ daily_limit: limit, window_start: start, window_end: end });
-        setDistPlan(Array.isArray(dpRes.data?.slots) ? dpRes.data.slots : []);
+        // Campaign-aware: the server resolves the daily limit, the send window and how
+        // many contacts are still pending, so the plan is bounded by real recipients
+        // rather than advertising a full daily limit that will never be sent.
+        const dpRes = await engineAPI.getDistributionPlan({ campaign_id: id });
+        setDistPlan(dpRes.data ?? null);
       } catch {
         /* distribution plan optional */
       }
@@ -244,6 +254,42 @@ export default function CampaignDetail() {
 
   useEffect(() => { fetchCampaign(); }, [fetchCampaign]);
   useEffect(() => { fetchContacts(); }, [fetchContacts]);
+
+  /**
+   * Global auto-reply state, read once for context. Best-effort: a failure leaves
+   * `globalAi` null and the tab says it could not read it, rather than guessing.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    aiAPI
+      .getAutoReply()
+      .then(({ data }) => { if (!cancelled) setGlobalAi(data); })
+      .catch(() => { if (!cancelled) setGlobalAi(null); });
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * Writes the campaign's switch. The control is driven by `campaign`, which is only
+   * updated once the server has accepted the value, so a failure cannot leave the UI
+   * showing a setting that was never saved.
+   */
+  const handleAiReplyChange = async (next: boolean) => {
+    if (!id) return;
+    setSavingAi(true);
+    try {
+      await campaignsAPI.update(id, { ai_auto_reply_enabled: next });
+      setCampaign((prev) => (prev ? { ...prev, ai_auto_reply_enabled: next } : prev));
+      message.success(
+        next
+          ? 'The assistant may reply in this campaign when the global switch is on'
+          : 'This campaign is handled by people only — the assistant will not reply',
+      );
+    } catch {
+      message.error('Could not save the AI auto-reply setting for this campaign');
+    } finally {
+      setSavingAi(false);
+    }
+  };
 
   /**
    * Activating starts real WhatsApp sends, so it goes through a review first: the
@@ -655,61 +701,20 @@ export default function CampaignDetail() {
     {
       key: 'distribution',
       label: 'Distribution Plan',
+      children: <DistributionPlanTab plan={distPlan} />,
+    },
+    {
+      key: 'assistant',
+      label: 'AI Auto-reply',
       children: (
-        <Card style={{ borderRadius: radius.xl }}>
-          {distPlan.length === 0 ? (
-            <Empty description="Configure send window and daily limit to see the distribution plan." />
-          ) : (
-            <Flex vertical gap={space.sm}>
-              {distPlan.map((slot, i) => (
-                <Flex key={i} align="center" gap={space.lg}>
-                  <Text
-                    style={{
-                      width: 60,
-                      fontSize: font.size.footnote,
-                      fontWeight: font.weight.medium,
-                      color: color.textSecondary,
-                    }}
-                  >
-                    {slot.time}
-                  </Text>
-                  <div
-                    style={{
-                      flex: 1,
-                      background: color.fill,
-                      borderRadius: radius.sm,
-                      height: 24,
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: `${Math.min((slot.count / Math.max(...distPlan.map((s) => s.count), 1)) * 100, 100)}%`,
-                        height: '100%',
-                        background: color.accent,
-                        borderRadius: radius.sm,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'flex-end',
-                        paddingRight: space.sm,
-                      }}
-                    >
-                      <Text
-                        style={{
-                          color: color.textOnAccent,
-                          fontSize: font.size.caption,
-                          fontWeight: font.weight.semibold,
-                        }}
-                      >
-                        {slot.count}
-                      </Text>
-                    </div>
-                  </div>
-                </Flex>
-              ))}
-            </Flex>
-          )}
-        </Card>
+        <CampaignAiReplyTab
+          // null (not set) follows the global switch, which for this campaign is the same
+          // observable outcome as "allowed", so both render as allowed.
+          allowed={campaign.ai_auto_reply_enabled !== false}
+          global={globalAi}
+          saving={savingAi}
+          onChange={handleAiReplyChange}
+        />
       ),
     },
   ];
@@ -994,7 +999,333 @@ export default function CampaignDetail() {
   );
 }
 
-/** One label/value line in the review's exclusion and schedule lists. */
+/**
+ * Per-campaign AI auto-reply.
+ *
+ * Strictly an opt-out. The global switch in Settings decides whether the assistant runs
+ * at all; this can only take one campaign out of it, and the copy has to say so — an
+ * operator who reads this as "the assistant is now answering" would be wrong whenever the
+ * global switch is off.
+ */
+function CampaignAiReplyTab({
+  allowed,
+  global,
+  saving,
+  onChange,
+}: {
+  allowed: boolean;
+  global: AiAutoReplySetting | null;
+  saving: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  /** What actually happens to this campaign's replies right now. */
+  const replyingNow = allowed && global?.enabled === true;
+
+  return (
+    <Card style={{ borderRadius: radius.xl, maxWidth: 620 }}>
+      <Flex vertical gap={space.lg}>
+        <Flex justify="space-between" align="flex-start" gap={space.md}>
+          <Flex align="center" gap={space.md}>
+            <div
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: radius.lg,
+                background: replyingNow ? color.successSoft : color.fillStrong,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <RobotOutlined
+                style={{
+                  color: replyingNow ? color.success : color.textSecondary,
+                  fontSize: font.size.headline,
+                }}
+              />
+            </div>
+            <div>
+              <Text strong style={{ display: 'block' }} id="campaign-ai-auto-reply-label">
+                AI auto-reply for this campaign
+              </Text>
+              <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+                {allowed
+                  ? replyingNow
+                    ? 'Allowed, and the global switch is on — the assistant is answering replies here'
+                    : 'Allowed, but the global switch is off — nothing is being auto-replied'
+                  : 'Off — every reply in this campaign is left for a person'}
+              </Text>
+            </div>
+          </Flex>
+          {/* State is spelled out beside the switch, so it is never carried by colour alone. */}
+          <Flex align="center" gap={space.sm}>
+            <Text
+              aria-hidden
+              style={{
+                fontSize: font.size.footnote,
+                fontWeight: font.weight.medium,
+                color: allowed ? color.text : color.textSecondary,
+              }}
+            >
+              {allowed ? 'On' : 'Off'}
+            </Text>
+            <Switch
+              checked={allowed}
+              loading={saving}
+              onChange={onChange}
+              aria-labelledby="campaign-ai-auto-reply-label"
+              aria-label="AI auto-reply for this campaign"
+            />
+          </Flex>
+        </Flex>
+
+        {/* Only shown when it matters: leaving this on while the global switch is off is a
+            perfectly normal state, and must not read as a misconfiguration. */}
+        {allowed && global !== null && !global.enabled && (
+          <Alert
+            type="info"
+            showIcon
+            title="The global AI auto-reply switch is off."
+            description="No campaign is auto-replying right now. Turn it on in Settings → AI Assistant to let the assistant answer this campaign's replies."
+          />
+        )}
+
+        {global === null && (
+          <Alert
+            type="warning"
+            showIcon
+            title="Could not read the global AI auto-reply switch."
+            description="This campaign's own setting is still shown and can be changed, but whether the assistant is actually replying cannot be confirmed here."
+          />
+        )}
+
+        <div
+          style={{
+            background: color.fill,
+            borderRadius: radius.md,
+            padding: `${space.md}px ${space.lg}px`,
+          }}
+        >
+          <Text
+            style={{ display: 'block', fontSize: font.size.footnote, color: color.textSecondary }}
+          >
+            A campaign cannot turn the assistant on by itself. The global switch in
+            Settings → AI Assistant decides whether it replies at all; this one only
+            decides whether <em>this</em> campaign is included. Turning it off here stops
+            the assistant for this campaign immediately, whatever the global switch says.
+          </Text>
+          <Text
+            style={{
+              display: 'block',
+              marginTop: space.sm,
+              fontSize: font.size.footnote,
+              color: color.textSecondary,
+            }}
+          >
+            Either way, opted-out and suppressed contacts are never messaged, and the
+            assistant hands over to a human when it is unsure.
+          </Text>
+        </div>
+      </Flex>
+    </Card>
+  );
+}
+
+/**
+ * What the sender will actually do today.
+ *
+ * Two things this must not do, both of which it previously did. It must not plan for the
+ * daily limit when fewer contacts are pending — the numbers here are what an operator
+ * checks a stalled campaign against, so `planned_messages` is min(pending, limit). And
+ * the bars must not be flat: the real distributor draws every gap at random from the
+ * humanised band, so an even hour-by-hour split would describe a sender that does not
+ * exist. The server returns a seeded simulation of the real pacing, stable per campaign.
+ */
+function DistributionPlanTab({ plan }: { plan: DistributionPlan | null }) {
+  if (!plan || plan.slots.length === 0) {
+    return (
+      <Card style={{ borderRadius: radius.xl }}>
+        <Empty
+          description={
+            plan?.pending_contacts === 0
+              ? 'No pending recipients — every contact in this campaign has already been processed.'
+              : 'Configure send window and daily limit, and add contacts, to see the distribution plan.'
+          }
+        />
+      </Card>
+    );
+  }
+
+  const peak = Math.max(...plan.slots.map((s) => s.count), 1);
+
+  const facts: { label: string; value: string }[] = [
+    {
+      label: 'Pending recipients',
+      value:
+        plan.pending_contacts === null
+          ? '—'
+          : plan.pending_contacts.toLocaleString(),
+    },
+    { label: 'Scheduled today', value: plan.messages_today.toLocaleString() },
+    { label: 'Send window', value: plan.send_window },
+    { label: 'Gap between messages', value: plan.gap_between_messages },
+    {
+      label: 'Estimated finish',
+      value: plan.estimated_finish
+        ? `${plan.estimated_finish} (${plan.estimated_completion})`
+        : plan.estimated_completion,
+    },
+    {
+      label: 'Days to work through the audience',
+      value: `${plan.estimated_days.toLocaleString()} ${plan.estimated_days === 1 ? 'day' : 'days'}`,
+    },
+  ];
+
+  return (
+    <Card style={{ borderRadius: radius.xl }}>
+      <Flex vertical gap={space.xl}>
+        <div
+          style={{
+            background: color.accentSofter,
+            border: `1px solid ${color.separator}`,
+            borderRadius: radius.lg,
+            padding: space.lg,
+          }}
+        >
+          <Text
+            strong
+            style={{
+              display: 'block',
+              fontSize: font.size.title1,
+              fontWeight: font.weight.semibold,
+              lineHeight: 1.1,
+              color: color.text,
+            }}
+          >
+            {plan.messages_today.toLocaleString()}
+          </Text>
+          <Text style={{ color: color.textSecondary, fontSize: font.size.footnote }}>
+            {plan.messages_today === 1 ? 'message' : 'messages'} planned for today
+            {plan.pending_contacts !== null &&
+              ` · ${plan.pending_contacts.toLocaleString()} pending ${
+                plan.pending_contacts === 1 ? 'recipient' : 'recipients'
+              } · ${plan.daily_limit.toLocaleString()}/day limit`}
+          </Text>
+        </div>
+
+        {/* Spillover and "nothing pending" are the cases where the chart alone would
+            mislead, so they are stated in words. */}
+        {plan.notes.map((note, i) => (
+          <Alert
+            key={i}
+            type={plan.spillover_messages > 0 && i === 0 ? 'warning' : 'info'}
+            showIcon
+            icon={<WarningOutlined />}
+            title={note}
+          />
+        ))}
+
+        <Flex
+          vertical
+          gap={space.sm}
+          style={{
+            background: color.fill,
+            borderRadius: radius.md,
+            padding: `${space.md}px ${space.lg}px`,
+          }}
+        >
+          {facts.map((f) => (
+            <ReviewLine key={f.label} label={f.label} value={f.value} />
+          ))}
+        </Flex>
+
+        <div>
+          <Text strong style={{ display: 'block', marginBottom: space.xs }}>
+            Hour by hour
+          </Text>
+          <Text
+            style={{
+              display: 'block',
+              marginBottom: space.md,
+              fontSize: font.size.caption,
+              color: color.textSecondary,
+            }}
+          >
+            Counts are uneven because the sender draws every gap at random
+            ({plan.gap_range_seconds.min}–{plan.gap_range_seconds.max}s) rather than
+            sending on a fixed rhythm. This shape is simulated from that same pacing and
+            stays the same for this campaign, so it can be compared with what happens.
+          </Text>
+          <Flex vertical gap={space.sm}>
+            {plan.slots.map((slot, i) => (
+              <Flex key={i} align="center" gap={space.lg}>
+                <Text
+                  style={{
+                    width: 60,
+                    fontSize: font.size.footnote,
+                    fontWeight: font.weight.medium,
+                    color: color.textSecondary,
+                  }}
+                >
+                  {slot.time}
+                </Text>
+                <div
+                  style={{
+                    flex: 1,
+                    background: color.fill,
+                    borderRadius: radius.sm,
+                    height: 24,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      // An hour with no sends is a real outcome of randomised pacing, so
+                      // its bar is zero-width and the count is rendered beside it instead.
+                      width: `${Math.min((slot.count / peak) * 100, 100)}%`,
+                      height: '100%',
+                      background: color.accent,
+                      borderRadius: radius.sm,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'flex-end',
+                      paddingRight: space.sm,
+                    }}
+                  >
+                    {slot.count > 0 && (
+                      <Text
+                        style={{
+                          color: color.textOnAccent,
+                          fontSize: font.size.caption,
+                          fontWeight: font.weight.semibold,
+                        }}
+                      >
+                        {slot.count}
+                      </Text>
+                    )}
+                  </div>
+                </div>
+                {slot.count === 0 && (
+                  <Text
+                    style={{
+                      width: 24,
+                      fontSize: font.size.caption,
+                      color: color.textSecondary,
+                    }}
+                  >
+                    0
+                  </Text>
+                )}
+              </Flex>
+            ))}
+          </Flex>
+        </div>
+      </Flex>
+    </Card>
+  );
+}
+
+/** One label/value line in a fact list — the send review and the distribution plan. */
 function ReviewLine({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <Flex justify="space-between" align="baseline" gap={space.lg}>

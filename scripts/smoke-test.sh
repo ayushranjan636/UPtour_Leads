@@ -143,8 +143,14 @@ check "POST /campaigns/:id/contacts" 200 "$CODE"
 api GET "/campaigns/$CAMPAIGN_ID/stats"
 check "GET /campaigns/:id/stats" 200 "$CODE"
 
-api GET "/engine/distribution-plan?dailyLimit=10&windowStart=09:00&windowEnd=18:00"
-check "GET /engine/distribution-plan" 200 "$CODE"
+api GET "/engine/distribution-plan?daily_limit=10&window_start=09:00&window_end=18:00"
+check "GET /engine/distribution-plan (hypothetical limit)" 200 "$CODE"
+dim   "        $(printf '%s' "$BODY" | head -c 200)"
+
+# The campaign-aware form is the one the UI uses: the pending recipient count is
+# resolved server-side so the plan is bounded by contacts that can really be sent to.
+api GET "/engine/distribution-plan?campaign_id=$CAMPAIGN_ID"
+check "GET /engine/distribution-plan (campaign)" 200 "$CODE"
 dim   "        $(printf '%s' "$BODY" | head -c 200)"
 
 # ── 5. Data collection (scraping) ───────────────────────
