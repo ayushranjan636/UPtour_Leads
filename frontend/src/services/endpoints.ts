@@ -17,9 +17,34 @@ export const dashboardAPI = {
 };
 
 /* ── Contacts ─────────────────────────────────────── */
+
+/**
+ * Array params must repeat the bare key — `?city=Agra&city=Delhi`.
+ *
+ * Axios defaults to `city[]=Agra&city[]=Delhi`, which only becomes an array again if
+ * the server happens to run a bracket-aware query parser. `GET /contacts` documents
+ * the repeated-key form, so pin it explicitly rather than relying on that.
+ */
+const REPEAT_ARRAY_PARAMS = { indexes: null } as const;
+
+/** One collection job or one CSV import, as an addressable audience. */
+export interface ContactDataset {
+  id: string;
+  name: string;
+  /** Reachable contacts only, so the number matches what would be enrolled. */
+  contactCount: number;
+  createdAt: string;
+}
+
+/** Shape of `GET /contacts/datasets`. */
+export interface ContactDatasets {
+  collectionJobs: ContactDataset[];
+  imports: ContactDataset[];
+}
+
 export const contactsAPI = {
   list: (params?: Record<string, unknown>) =>
-    api.get('/contacts', { params }),
+    api.get('/contacts', { params, paramsSerializer: REPEAT_ARRAY_PARAMS }),
   get: (id: string) => api.get(`/contacts/${id}`),
   create: (data: Record<string, unknown>) => api.post('/contacts', data),
   update: (id: string, data: Record<string, unknown>) =>
@@ -33,15 +58,45 @@ export const contactsAPI = {
    */
   remove: (id: string) => api.delete(`/contacts/${id}`),
   /**
+   * Bulk actions on a selection. All capped at 500 ids server-side.
+   *
+   * `bulkGroup` stores the label in the contact's tags, so a contact can belong to
+   * several groups and a campaign audience can then target the group directly.
+   */
+  bulkGroup: (contactIds: string[], group: string) =>
+    api.post<{ updated: number; group: string }>('/contacts/bulk/group', { contactIds, group }),
+  bulkUngroup: (contactIds: string[], group: string) =>
+    api.post<{ updated: number }>('/contacts/bulk/ungroup', { contactIds, group }),
+  /** Checks each number against WhatsApp; those not on it are suppressed. */
+  bulkVerify: (contactIds: string[]) =>
+    api.post<{ verified: number; suppressed: number; failed: number }>(
+      '/contacts/bulk/verify',
+      { contactIds },
+    ),
+  /** Irreversible. Removes each contact with its message/campaign/lead history. */
+  bulkDelete: (contactIds: string[]) =>
+    api.post<{ deleted: number; failed: { id: string; reason: string }[] }>(
+      '/contacts/bulk/delete',
+      { contactIds },
+    ),
+  /** Group labels in use, with reachable-contact counts. */
+  groups: () => api.get<{ name: string; contactCount: number }[]>('/contacts/groups'),
+  /**
    * Distinct location values actually present in the data, for filter dropdowns.
    * Pass `country` to narrow states/cities and `state_region` to narrow districts,
    * so the UI can cascade Country → State → District.
    */
   locations: (params?: { country?: string; state_region?: string }) =>
     api.get('/contacts/locations', { params }),
+  /**
+   * The collection jobs and CSV imports that produced contacts, with reachable
+   * counts. Lets an operator target "the Agra agencies I scraped on Tuesday" as one
+   * choice instead of trying to rebuild that set out of location filters.
+   */
+  datasets: () => api.get<ContactDatasets>('/contacts/datasets'),
   /** Unpaginated total for a filter — the real audience size, not a page length. */
   count: (params?: Record<string, unknown>) =>
-    api.get('/contacts/count', { params }),
+    api.get('/contacts/count', { params, paramsSerializer: REPEAT_ARRAY_PARAMS }),
 };
 
 /* ── Companies ────────────────────────────────────── */

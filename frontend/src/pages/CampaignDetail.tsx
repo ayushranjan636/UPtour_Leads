@@ -41,6 +41,10 @@ import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import StatusTag from '../components/StatusTag';
 import LocationFilter, { type LocationFilterValue } from '../components/LocationFilter';
+import DatasetFilter, {
+  EMPTY_DATASET_FILTER,
+  type DatasetFilterValue,
+} from '../components/DatasetFilter';
 import {
   campaignsAPI,
   templatesAPI,
@@ -151,6 +155,8 @@ export default function CampaignDetail() {
 
   // "By filter" tab
   const [audienceFilter, setAudienceFilter] = useState<LocationFilterValue>({});
+  const [audienceDatasets, setAudienceDatasets] =
+    useState<DatasetFilterValue>(EMPTY_DATASET_FILTER);
   const [audienceSearch, setAudienceSearch] = useState('');
   const [audienceCount, setAudienceCount] = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
@@ -282,16 +288,28 @@ export default function CampaignDetail() {
     }
   };
 
-  /** Only set levels are sent; an undefined value would serialise as "undefined". */
+  /**
+   * Only levels that actually hold values are sent: an empty array contributes
+   * nothing and an undefined one would serialise as the literal "undefined".
+   *
+   * The same object is used for the live count and for the submit, so the number the
+   * operator is shown and the set that gets enrolled can never diverge.
+   */
   const filterParams = useCallback((): Record<string, unknown> => {
     const params: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(audienceFilter)) {
-      if (value) params[key] = value;
+      if (value?.length) params[key] = value;
+    }
+    if (audienceDatasets.collection_job_ids.length) {
+      params.collection_job_ids = audienceDatasets.collection_job_ids;
+    }
+    if (audienceDatasets.import_file_ids.length) {
+      params.import_file_ids = audienceDatasets.import_file_ids;
     }
     const q = audienceSearch.trim();
     if (q) params.search = q;
     return params;
-  }, [audienceFilter, audienceSearch]);
+  }, [audienceFilter, audienceDatasets, audienceSearch]);
 
   const openAddContacts = () => {
     setAddContactModal(true);
@@ -302,6 +320,7 @@ export default function CampaignDetail() {
     setAddContactModal(false);
     setSelectedContactIds([]);
     setAudienceFilter({});
+    setAudienceDatasets(EMPTY_DATASET_FILTER);
     setAudienceSearch('');
     setAudienceCount(null);
     setManualSearch('');
@@ -738,6 +757,16 @@ export default function CampaignDetail() {
                     value={audienceFilter}
                     onChange={setAudienceFilter}
                     showAgencyType
+                  />
+
+                  {/* Targets one scrape or upload exactly. Location filters cannot say
+                      this: two collection runs over the same city are indistinguishable
+                      by country/state/city, so rebuilding "Tuesday's Agra agencies" from
+                      them would silently pull in every other run's contacts too. */}
+                  <DatasetFilter
+                    value={audienceDatasets}
+                    onChange={setAudienceDatasets}
+                    style={{ width: '100%' }}
                   />
 
                   <Input

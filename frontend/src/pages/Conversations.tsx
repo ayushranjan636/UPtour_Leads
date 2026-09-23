@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Input,
   Typography,
@@ -9,6 +10,7 @@ import {
   Progress,
   Spin,
   Empty,
+  Alert,
   message,
 } from 'antd';
 import {
@@ -18,7 +20,17 @@ import {
   MessageOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
-import { contactsAPI, messagesAPI } from '../services/endpoints';
+import DatasetFilter, {
+  EMPTY_DATASET_FILTER,
+  isDatasetFilterEmpty,
+  type DatasetFilterValue,
+} from '../components/DatasetFilter';
+import {
+  contactsAPI,
+  gatewayAPI,
+  messagesAPI,
+  type WhatsAppConnection,
+} from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
@@ -55,6 +67,9 @@ interface AiAnalysis {
   lead_score?: number;
 }
 
+/** How often the gateway's pairing state is re-checked while the page is open. */
+const CONNECTION_POLL_MS = 30_000;
+
 export default function Conversations() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(true);
@@ -62,21 +77,68 @@ export default function Conversations() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [searchText, setSearchText] = useState('');
+  const [datasets, setDatasets] = useState<DatasetFilterValue>(EMPTY_DATASET_FILTER);
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
+  /** null until the first probe resolves, so nothing is claimed before it is known. */
+  const [connection, setConnection] = useState<WhatsAppConnection | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  /*
+   * Sending is gated on the gateway actually being paired. Previously the composer
+   * looked identical whether or not WhatsApp was connected, so the only feedback was
+   * a failed send after the message had been typed.
+   *
+   * `connected: false` is the explicit blocker; a probe that never resolves leaves
+   * `connection` null, and the composer stays enabled rather than locking the
+   * operator out of a gateway that might be fine.
+   */
+  const gatewayDown = connection !== null && !connection.connected;
+
+  useEffect(() => {
+    let cancelled = false;
+    const probe = async () => {
+      try {
+        const { data } = await gatewayAPI.connection();
+        if (!cancelled) setConnection(data);
+      } catch {
+        // The endpoint reports an unreachable gateway in its payload rather than
+        // throwing, so a thrown error means the portal API itself is unreachable —
+        // a different problem, and not grounds for blocking the composer.
+        if (!cancelled) setConnection(null);
+      }
+    };
+    probe();
+    const timer = setInterval(probe, CONNECTION_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   const fetchContacts = useCallback(async () => {
     setLoadingContacts(true);
     try {
-      const { data: res } = await contactsAPI.list({ page: 1, limit: 100, search: searchText || undefined });
+      const params: Record<string, unknown> = {
+        page: 1,
+        limit: 100,
+        search: searchText || undefined,
+      };
+      if (datasets.collection_job_ids.length) {
+        params.collection_job_ids = datasets.collection_job_ids;
+      }
+      if (datasets.import_file_ids.length) {
+        params.import_file_ids = datasets.import_file_ids;
+      }
+      const { data: res } = await contactsAPI.list(params);
       setContacts(res.data ?? []);
     } catch {
       /* ignore */
     } finally {
       setLoadingContacts(false);
     }
-  }, [searchText]);
+    // `datasets` is rebuilt on every change, so depend on its serialised form.
+  }, [searchText, JSON.stringify(datasets)]);
 
   useEffect(() => {
     fetchContacts();
@@ -112,10 +174,11 @@ export default function Conversations() {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!messageText.trim() || !selectedContact) return;
+    if (!messageText.trim() || !selectedContact || gatewayDown) return;
     setSending(true);
     try {
       await messagesAPI.send({ contactId: selectedContact.id, body: messageText });
+      // Cleared only on success, so a failure never costs the draft.
       setMessageText('');
       fetchMessages(selectedContact.id);
     } catch (err: unknown) {
@@ -123,9 +186,11 @@ export default function Conversations() {
       // connected, 400 for an opted-out contact) instead of 201 with a failed row,
       // so show its message rather than a generic string. Keep the draft text so
       // the operator does not have to retype it.
-      const detail = (err as { response?: { data?: { message?: string } } })?.response?.data
-        ?.message;
-      message.error(detail ?? 'Could not send the message. Check that WhatsApp is connected.');
+      const detail = (err as { response?: { data?: { message?: string | string[] } } })
+        ?.response?.data?.message;
+      // Nest's validation errors arrive as an array of strings.
+      const text = Array.isArray(detail) ? detail.join('. ') : detail;
+      message.error(text ?? 'Could not send the message. Check that WhatsApp is connected.');
       // Refresh anyway: the failed attempt is persisted and should appear as ⚠.
       fetchMessages(selectedContact.id);
     } finally {
@@ -139,7 +204,7 @@ export default function Conversations() {
     setSelectedContact(contact);
   };
 
-  if (!loadingContacts && contacts.length === 0 && !searchText) {
+  if (!loadingContacts && contacts.length === 0 && !searchText && isDatasetFilterEmpty(datasets)) {
     return (
       <div>
         <PageHeader title="Conversations" subtitle="WhatsApp messaging" />
@@ -194,14 +259,24 @@ export default function Conversations() {
           }}
         >
           <div style={{ padding: '16px 16px 12px' }}>
-            <Input
-              placeholder="Search contacts..."
-              prefix={<SearchOutlined style={{ color: color.textTertiary }} />}
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              allowClear
-              style={{ borderRadius: radius.lg }}
-            />
+            <Flex vertical gap={space.sm}>
+              <Input
+                placeholder="Search contacts..."
+                aria-label="Search contacts"
+                prefix={<SearchOutlined style={{ color: color.textTertiary }} />}
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                allowClear
+                style={{ borderRadius: radius.lg }}
+              />
+              {/* Narrows the list to one scrape or upload, so an operator working
+                  through a single batch is not scrolling past every other contact. */}
+              <DatasetFilter
+                value={datasets}
+                onChange={setDatasets}
+                style={{ width: '100%', minWidth: 0 }}
+              />
+            </Flex>
           </div>
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {loadingContacts ? (
@@ -210,7 +285,11 @@ export default function Conversations() {
               </Flex>
             ) : contacts.length === 0 ? (
               <Flex justify="center" style={{ padding: space.xl }}>
-                <Text style={{ color: color.textTertiary }}>No contacts found</Text>
+                <Text style={{ color: color.textTertiary }}>
+                  {isDatasetFilterEmpty(datasets)
+                    ? 'No contacts found'
+                    : 'No contacts in the selected datasets'}
+                </Text>
               </Flex>
             ) : (
               contacts.map((contact) => (
@@ -462,26 +541,62 @@ export default function Conversations() {
                   background: color.surface,
                 }}
               >
+                {gatewayDown && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: space.sm, borderRadius: radius.md }}
+                    // antd 6 renamed Alert's `message` to `title`; the old name still
+                    // works but logs a deprecation warning.
+                    title="WhatsApp is not connected"
+                    description={
+                      <Flex vertical gap={space.xs}>
+                        {/* The API's own explanation: it distinguishes a session that
+                            needs scanning from a gateway process that is down, which
+                            need different fixes. */}
+                        <Text style={{ fontSize: font.size.footnote, color: color.textSecondary }}>
+                          {connection?.message ??
+                            'No WhatsApp session is linked, so messages cannot be sent.'}
+                        </Text>
+                        <Link to="/settings" style={{ fontSize: font.size.footnote }}>
+                          Open Settings to link WhatsApp
+                        </Link>
+                      </Flex>
+                    }
+                  />
+                )}
                 <Flex gap={space.sm} align="center">
                   <Input
-                    placeholder="Type a message..."
+                    placeholder={
+                      gatewayDown ? 'Connect WhatsApp to send messages' : 'Type a message...'
+                    }
+                    aria-label="Message to send"
                     value={messageText}
                     onChange={(e) => setMessageText(e.target.value)}
                     style={{ borderRadius: radius.pill, paddingLeft: space.lg }}
                     onPressEnter={handleSend}
-                    disabled={sending}
+                    disabled={sending || gatewayDown}
                   />
                   <Button
                     type="primary"
                     shape="circle"
+                    aria-label="Send message"
+                    title={gatewayDown ? 'WhatsApp is not connected' : 'Send message'}
                     icon={<SendOutlined />}
                     loading={sending}
+                    disabled={gatewayDown}
                     onClick={handleSend}
-                    style={{
-                      background: color.accent,
-                      borderColor: color.accent,
-                      color: color.textOnAccent,
-                    }}
+                    // Explicit accent only while enabled: antd's disabled styling has
+                    // to win, or a dead button would still look like a live one.
+                    style={
+                      gatewayDown
+                        ? undefined
+                        : {
+                            background: color.accent,
+                            borderColor: color.accent,
+                            color: color.textOnAccent,
+                          }
+                    }
                   />
                 </Flex>
               </div>
