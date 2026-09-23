@@ -4,6 +4,7 @@ import {
   HttpException,
   HttpStatus,
   ServiceUnavailableException,
+  OnApplicationBootstrap,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance, AxiosError } from 'axios';
@@ -26,8 +27,24 @@ export function toChatId(whatsappNumber: string, existingChatId?: string | null)
 /** Session states from which OpenWA can actually deliver a message. */
 const SENDABLE_STATUS = 'ready';
 
+/**
+ * Gateway events the portal depends on.
+ *
+ * `message.ack` drives delivered/read rates, `message.received` drives replies, leads and
+ * AI auto-reply, `message.failed` turns a silent non-delivery into a visible failure, and
+ * `session.status` lets the dashboard notice a dropped link. Subscribing to '*' instead
+ * would also deliver group, call and presence traffic the portal discards, so every
+ * delivery would cost a request for nothing.
+ */
+const OPENWA_WEBHOOK_EVENTS = [
+  'message.received',
+  'message.ack',
+  'message.failed',
+  'session.status',
+] as const;
+
 @Injectable()
-export class OpenwaService {
+export class OpenwaService implements OnApplicationBootstrap {
   private readonly logger = new Logger(OpenwaService.name);
   private readonly client: AxiosInstance;
   private readonly configuredSessionId?: string;
@@ -116,9 +133,123 @@ export class OpenwaService {
     return ready.id;
   }
 
+  /**
+   * Subscribe to gateway events as soon as the app is up.
+   *
+   * Registration is a boot concern rather than a manual setup step: the subscription
+   * lives in the gateway's database keyed by session id, so re-linking WhatsApp drops it
+   * and every delivery receipt and inbound reply is lost until someone notices. Failing
+   * softly keeps the portal usable when the gateway is simply down.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      const sessionId = await this.resolveSessionId();
+      await this.ensureWebhook(sessionId);
+    } catch (err) {
+      this.logger.warn(
+        `Skipped webhook registration on boot: ${(err as Error).message}. ` +
+          'It will be retried the next time WhatsApp is connected.',
+      );
+    }
+  }
+
+  /** Readable one-line cause; axios buries the useful part in `response.data`. */
+  private describeError(err: unknown): string {
+    const ax = err as AxiosError<any>;
+    const body = ax?.response?.data;
+    const detail =
+      typeof body === 'string' ? body : (body?.message ?? body?.error ?? undefined);
+    return [ax?.response?.status, detail ?? (err as Error)?.message]
+      .filter(Boolean)
+      .join(' ');
+  }
+
   /** Forget the cached session so the next resolve re-queries the gateway. */
   invalidateSessionCache(): void {
     this.discoveredSessionId = null;
+  }
+
+  /**
+   * Ensure the gateway will call our webhook for this session.
+   *
+   * Without a subscription the portal is deaf: `message.ack` never arrives so delivered
+   * and read rates sit at 0 regardless of what actually happened, `message.received`
+   * never arrives so replies never appear and no lead is ever created, and
+   * `message.failed` never arrives so a rejected send looks sent. Subscriptions live in
+   * the gateway's own database and are scoped to a session id, so re-linking WhatsApp or
+   * resetting its volume silently drops them — registering on boot is what stops that
+   * from becoming a days-long silent outage.
+   *
+   * Idempotent: an existing subscription for the same URL is reconciled rather than
+   * duplicated, because duplicates would double every stat.
+   */
+  async ensureWebhook(sessionId: string): Promise<{ id: string; created: boolean } | null> {
+    const url = this.configService.get<string>('OPENWA_WEBHOOK_URL')?.trim();
+    const secret = this.configService.get<string>('OPENWA_WEBHOOK_SECRET')?.trim();
+
+    if (!url) {
+      this.logger.warn(
+        'OPENWA_WEBHOOK_URL is not set, so delivery receipts and inbound replies cannot ' +
+          'reach the portal. Delivered/read rates will stay at 0.',
+      );
+      return null;
+    }
+    // The gateway signs every delivery with this secret and our controller rejects
+    // unsigned payloads, so registering without one produces a webhook whose every
+    // delivery is refused — worse than none, because it looks configured.
+    if (!secret) {
+      this.logger.warn(
+        'OPENWA_WEBHOOK_SECRET is not set; refusing to register a webhook whose ' +
+          'deliveries our own controller would reject as unsigned.',
+      );
+      return null;
+    }
+
+    try {
+      const existing = await this.client
+        .get(`/sessions/${sessionId}/webhooks`)
+        .then((r) => (Array.isArray(r.data) ? r.data : (r.data?.data ?? [])))
+        .catch(() => [] as any[]);
+
+      const match = existing.find((w: any) => w?.url === url);
+      if (match) {
+        // Reconcile rather than recreate: the event list or active flag may have drifted
+        // (an older build subscribed to fewer events), and a second row for the same URL
+        // would deliver everything twice.
+        const events = Array.isArray(match.events) ? match.events : [];
+        const missing = OPENWA_WEBHOOK_EVENTS.filter((e) => !events.includes(e));
+        if (missing.length === 0 && match.active !== false) {
+          this.logger.log(`Webhook already registered for session ${sessionId}`);
+          return { id: match.id, created: false };
+        }
+
+        await this.client.patch(`/sessions/${sessionId}/webhooks/${match.id}`, {
+          events: [...OPENWA_WEBHOOK_EVENTS],
+          active: true,
+        });
+        this.logger.log(
+          `Webhook ${match.id} updated for session ${sessionId}` +
+            (missing.length ? ` (added ${missing.join(', ')})` : ' (re-activated)'),
+        );
+        return { id: match.id, created: false };
+      }
+
+      const { data } = await this.client.post(`/sessions/${sessionId}/webhooks`, {
+        url,
+        events: [...OPENWA_WEBHOOK_EVENTS],
+        secret,
+      });
+      this.logger.log(`Webhook registered for session ${sessionId} -> ${url}`);
+      return { id: data?.id, created: true };
+    } catch (err) {
+      // A missing webhook degrades reporting; it must not stop the app from booting or
+      // block a send, so this is logged loudly rather than thrown.
+      this.logger.error(
+        `Could not register the webhook for session ${sessionId}; delivery receipts and ` +
+          `inbound replies will not arrive: ${this.describeError(err)}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -412,6 +543,10 @@ export class OpenwaService {
     }
 
     const qrCode = await this.fetchQr(sessionId);
+    // A fresh link means a fresh session id, so the old subscription no longer
+    // applies; register before the first message can arrive.
+    await this.ensureWebhook(sessionId).catch(() => undefined);
+
     return {
       sessionId,
       status: session.status ?? 'initializing',

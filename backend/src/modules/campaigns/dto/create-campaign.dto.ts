@@ -7,6 +7,7 @@ import {
   Max,
   MaxLength,
   IsObject,
+  IsBoolean,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
@@ -88,6 +89,17 @@ export class CreateCampaignDto {
   @IsOptional()
   @IsString()
   openwa_session_id?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Allow LLM-composed auto-replies for this campaign. Defaults to true, and is ' +
+      'subordinate to the AI_AUTO_REPLY_ENABLED server switch — both must permit a ' +
+      'reply for one to be sent. Set false to have people handle this campaign only.',
+    default: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  ai_auto_reply_enabled?: boolean;
 
   @ApiPropertyOptional({ description: 'Maximum follow-up messages', default: 2, minimum: 0, maximum: 10 })
   @IsOptional()

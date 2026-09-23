@@ -31,6 +31,8 @@ interface AiReplyJobData {
   body: string;
   mediaType: 'image' | 'video' | 'document' | null;
   mediaUrl: string | null;
+  /** The inbound message this answers, so a sent reply can be traced to its trigger. */
+  inboundMessageId?: string;
 }
 
 /**

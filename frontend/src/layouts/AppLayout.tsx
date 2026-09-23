@@ -152,7 +152,16 @@ export default function AppLayout() {
         notificationsAPI.unread().catch(() => ({ data: { count: 0 } })),
       ]);
       const notifData = notifRes.data;
-      setNotifications(Array.isArray(notifData) ? notifData.slice(0, 10) : []);
+      // The list endpoint answers with a paginated envelope, `{ data: [...] }`, while
+      // some deployments return a bare array. Only the array case was handled, so the
+      // envelope fell through to `[]` and the panel read "No notifications" while the
+      // badge — which parses its own shape defensively — still showed a count.
+      const rows = Array.isArray(notifData)
+        ? notifData
+        : Array.isArray(notifData?.data)
+          ? notifData.data
+          : [];
+      setNotifications(rows.slice(0, 10));
       const count = typeof unreadRes.data === 'number'
         ? unreadRes.data
         : unreadRes.data?.count ?? 0;

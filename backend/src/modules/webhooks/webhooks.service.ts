@@ -12,6 +12,8 @@ import {
 import { Campaign, CampaignStatus } from '../../entities/campaign.entity';
 import { NotificationService } from '../notifications/notification.service';
 import { RedisService } from '../../common/redis/redis.service';
+import { InboundAiService } from '../ai/inbound-ai.service';
+import { isHumanInbound, isOwnEcho } from '../ai/inbound-ai.decisions';
 
 @Injectable()
 export class WebhooksService {
@@ -32,6 +34,7 @@ export class WebhooksService {
     private readonly webhookProcessQueue: Queue,
     private readonly notificationService: NotificationService,
     private readonly redis: RedisService,
+    private readonly inboundAi: InboundAiService,
   ) {}
 
   async processEvent(payload: any): Promise<void> {
@@ -136,6 +139,20 @@ export class WebhooksService {
       const phone = this.normalizeJidToPhone(senderJid);
       this.logger.log(`Incoming message from ${phone ?? senderJid} (JID: ${senderJid})`);
 
+      // Drop messages the account itself sent.
+      //
+      // Gateways echo outbound messages back on the same event stream, and an echo is
+      // indistinguishable from a prospect replying instantly: it would be stored as a
+      // reply, counted in stats_replied, turned into a lead, and answered — and that
+      // answer would echo back. Refusing them here is the outermost defence against an
+      // AI-to-AI loop that would burn the WhatsApp account.
+      if (isOwnEcho(data)) {
+        this.logger.log(
+          `Ignoring echo of our own message to ${phone ?? senderJid}: not an inbound reply`,
+        );
+        return;
+      }
+
       // Ignore group and broadcast traffic.
       //
       // The auto-create path below turns any unrecognised sender into a CRM contact.
@@ -195,6 +212,22 @@ export class WebhooksService {
       });
       const savedMessage = await this.messageRepo.save(message);
 
+      // Defence in depth around the funnel.
+      //
+      // Only a message a person actually sent may mark a campaign contact as replied,
+      // increment stats_replied, create a lead, or be answered automatically. The row
+      // built above is always an inbound, non-AI message, so this is true today — it is
+      // asserted rather than assumed because the cost of the assumption breaking is a
+      // funnel inflated by our own messages plus an AI talking to itself.
+      const isHumanReply = isHumanInbound(savedMessage);
+      if (!isHumanReply) {
+        this.logger.warn(
+          `Message ${savedMessage.id} is not a human inbound reply ` +
+            `(direction=${savedMessage.direction}, is_ai_generated=${savedMessage.is_ai_generated}) ` +
+            '— skipping reply stats, lead creation and auto-reply',
+        );
+      }
+
       const activeCampaignContact = await this.campaignContactRepo.findOne({
         where: {
           contact_id: contact.id,
@@ -204,8 +237,9 @@ export class WebhooksService {
       });
 
       let campaignContactId: string | null = null;
+      let campaignId: string | null = null;
 
-      if (activeCampaignContact) {
+      if (activeCampaignContact && isHumanReply) {
         this.logger.log(
           `Updating campaign contact ${activeCampaignContact.id} to replied`,
         );
@@ -217,6 +251,7 @@ export class WebhooksService {
         await this.messageRepo.save(savedMessage);
 
         campaignContactId = activeCampaignContact.id;
+        campaignId = activeCampaignContact.campaign_id;
 
         await this.campaignRepo.increment(
           { id: activeCampaignContact.campaign_id },
@@ -225,12 +260,25 @@ export class WebhooksService {
         );
       }
 
+      // Any genuine human reply is a lead, and may earn an automated answer. Both are
+      // delegated to InboundAiService so the webhook path and the analysis worker share
+      // one set of rules and one dedupe claim per inbound message.
+      if (isHumanReply) {
+        await this.inboundAi.handleInboundHumanMessage({
+          message: savedMessage,
+          contact,
+          campaignId,
+          campaignContactId,
+        });
+      }
+
       await this.aiAnalysisQueue.add(
         'analyze-reply',
         {
           messageId: savedMessage.id,
           contactId: contact.id,
           campaignContactId,
+          campaignId,
         },
         {
           attempts: 3,

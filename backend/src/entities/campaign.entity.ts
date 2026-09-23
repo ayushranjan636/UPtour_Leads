@@ -65,6 +65,18 @@ export class Campaign {
   @Column({ nullable: true })
   openwa_session_id: string;
 
+  /**
+   * Per-campaign kill switch for AI auto-replies, on top of the global
+   * AI_AUTO_REPLY_ENABLED flag. Both must permit a reply for one to be sent.
+   *
+   * Defaulted to true and nullable so existing rows are unaffected: a campaign that
+   * predates this column is governed by the global switch alone, which is where the
+   * decision already lived. Set false to hand one campaign entirely to people while
+   * automation keeps running elsewhere.
+   */
+  @Column({ type: 'boolean', nullable: true, default: true })
+  ai_auto_reply_enabled: boolean | null;
+
   @Column({ type: 'int', default: 2 })
   max_followups: number;
 

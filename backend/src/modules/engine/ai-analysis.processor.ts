@@ -1,17 +1,17 @@
 import { Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job, Queue } from 'bullmq';
+import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Job } from 'bullmq';
 import { Message } from '../../entities/message.entity';
 import { CampaignContact } from '../../entities/campaign-contact.entity';
 import { Contact } from '../../entities/contact.entity';
-import { Lead } from '../../entities/lead.entity';
+import { Lead, LeadStatus } from '../../entities/lead.entity';
 import { Campaign } from '../../entities/campaign.entity';
 import { AiAnalysis } from '../../entities/ai-analysis.entity';
 import { AiService } from '../ai/ai.service';
-import { AIAnalysisResult } from '../ai/ai.interfaces';
+import { InboundAiService, ReplyOutcome } from '../ai/inbound-ai.service';
+import { isHumanInbound, advanceLeadStatus } from '../ai/inbound-ai.decisions';
 import { SequenceService } from './sequence.service';
 
 interface AnalysisJobData {
@@ -57,10 +57,8 @@ export class AiAnalysisProcessor extends WorkerHost {
     @InjectRepository(AiAnalysis)
     private readonly analysisRepo: Repository<AiAnalysis>,
     private readonly aiService: AiService,
+    private readonly inboundAi: InboundAiService,
     private readonly sequenceService: SequenceService,
-    private readonly config: ConfigService,
-    @InjectQueue('message-send')
-    private readonly sendQueue: Queue,
   ) {
     super();
   }
@@ -142,17 +140,47 @@ export class AiAnalysisProcessor extends WorkerHost {
       // on mode === 'human'. Running it first meant the most engaged prospects — the
       // ones worth answering fastest — were the only ones who never got a reply.
       // The reply itself still yields to a human when the model says it should.
-      const replyQueued = await this.tryAiReply({
+      //
+      // Delegated to InboundAiService, which the webhook path also calls. One
+      // implementation and one per-message dedupe claim means whichever path gets here
+      // first answers, and the other finds the message already answered.
+      const replyOutcome = await this.tryAiReply({
         message,
         contactId,
         campaignId,
         campaignContactId,
-        analysis,
-        history,
       });
+
+      // `already_answered` counts as answered: the webhook path queued the reply, so the
+      // canned sequence must still stay quiet or the prospect gets two messages.
+      const replyQueued =
+        replyOutcome.queued || replyOutcome.reason === 'already_answered';
 
       // 7. Execute business rules
       await this.executeBusinessRules(analysis, contactId, campaignId, campaignContactId);
+
+      // 7b. Promote a converting conversation to a Deal.
+      //
+      // After the business rules, because those create or update the Lead a Deal must
+      // hang off, and only for a genuine human message — a Deal conjured from our own
+      // outbound text would be the most misleading row in the CRM. Best-effort: the
+      // analysis and the reply are already persisted, so a Deal write failing must not
+      // make BullMQ replay the whole job.
+      if (isHumanInbound(message)) {
+        try {
+          await this.inboundAi.maybeCreateDealFromAnalysis({
+            analysis,
+            contactId,
+            campaignId,
+            campaignContactId,
+            messageId,
+          });
+        } catch (dealErr) {
+          this.logger.warn(
+            `Deal classification failed for contact ${contactId}: ${(dealErr as Error).message}`,
+          );
+        }
+      }
 
       // 8. Check sequence triggers — after analysis, see if reply triggers next step.
       //    Skipped when the AI already answered, so a prospect never receives a
@@ -186,105 +214,42 @@ export class AiAnalysisProcessor extends WorkerHost {
   }
 
   /**
-   * Generate an AI reply and queue it for sending.
+   * Generate an AI reply and queue it for sending, via the shared InboundAiService.
    *
-   * Returns true when a reply was queued, so the caller can skip the canned-template
-   * sequence and avoid double-messaging the same inbound message.
-   *
-   * Every early return here is a deliberate decision to stay silent and let a human
-   * answer: replies disabled, an opted-out contact, an existing takeover, a model that
-   * asked for handover, or a low-confidence generation. Silence is the safe default —
-   * a wrong automated answer to a travel agency costs more than a slower human one.
+   * This processor keeps a wrapper rather than calling the service inline so the one
+   * precondition that matters is asserted in both entry points: only a genuine inbound
+   * human message may be answered. An analysis job could in principle be enqueued for
+   * any message id, and answering one of our own messages is the first step of an
+   * AI-to-AI loop.
    */
   private async tryAiReply(input: {
     message: Message;
     contactId: string;
     campaignId?: string;
     campaignContactId?: string;
-    analysis: AIAnalysisResult;
-    history: Message[];
-  }): Promise<boolean> {
-    const { message, contactId, campaignId, campaignContactId, analysis, history } = input;
+  }): Promise<ReplyOutcome> {
+    const { message, contactId, campaignId, campaignContactId } = input;
 
-    // Kill switch, default off: enabling automated replies is always an explicit
-    // operator decision, never something that turns itself on after a deploy.
-    if (this.config.get<string>('AI_AUTO_REPLY_ENABLED') !== 'true') return false;
-
-    // Never reply to someone leaving, and never argue with an opt-out.
-    if (analysis.opt_out) return false;
+    if (!isHumanInbound(message)) {
+      this.logger.warn(
+        `Not auto-replying to message ${message.id}: not a human inbound message ` +
+          `(direction=${message.direction}, is_ai_generated=${message.is_ai_generated})`,
+      );
+      return { queued: false, reason: 'not_human_inbound' };
+    }
 
     const contact = await this.contactRepo.findOne({
       where: { id: contactId },
       relations: ['company'],
     });
-    if (!contact || contact.is_opted_out || contact.is_suppressed) return false;
+    if (!contact) return { queued: false, reason: 'not_human_inbound' };
 
-    if (campaignContactId) {
-      const cc = await this.ccRepo.findOne({ where: { id: campaignContactId } });
-      if (cc?.mode === 'human') {
-        this.logger.log(`Skipping AI reply for CC ${campaignContactId}: human has taken over`);
-        return false;
-      }
-    }
-
-    const campaign = campaignId
-      ? await this.campaignRepo.findOne({ where: { id: campaignId } })
-      : null;
-
-    const reply = await this.aiService.generateReply(
-      message.body || '',
-      history.map((m) => ({
-        role: m.direction === 'outgoing' ? 'assistant' : 'user',
-        content: m.body || '',
-      })),
-      {
-        contactName: contact.name,
-        companyName: (contact as any).company?.name,
-        city: (contact as any).company?.city,
-        country: (contact as any).company?.country,
-        product: campaign?.product,
-        campaignName: campaign?.name,
-      },
-    );
-
-    if (!reply) return false;
-
-    // The model asking for a human, or being unsure, is the strongest available signal
-    // that this message should not be answered automatically.
-    if (reply.needsHuman || reply.confidence < 0.6) {
-      if (campaignContactId) {
-        await this.ccRepo.update(campaignContactId, { mode: 'human' as any });
-      }
-      this.logger.log(
-        `AI declined to auto-reply to contact ${contactId} ` +
-          `(needsHuman=${reply.needsHuman}, confidence=${reply.confidence}) — handed to a human`,
-      );
-      return false;
-    }
-
-    await this.sendQueue.add(
-      'send-ai-reply',
-      {
-        contactId,
-        campaignId,
-        campaignContactId,
-        body: reply.body,
-        mediaType: reply.mediaType,
-        mediaUrl: reply.mediaUrl,
-      },
-      {
-        // Short randomised pause. An instant answer is an unmistakable bot tell; a few
-        // seconds reads as a person picking up their phone. SIMULATE_TYPING on the
-        // gateway adds the "typing…" indicator on top of this.
-        delay: 4_000 + Math.floor(Math.random() * 11_000),
-        attempts: 2,
-        backoff: { type: 'fixed', delay: 30_000 },
-        removeOnComplete: true,
-      },
-    );
-
-    this.logger.log(`Queued AI reply to contact ${contactId}: "${reply.body.slice(0, 60)}…"`);
-    return true;
+    return this.inboundAi.maybeAutoReply({
+      message,
+      contact,
+      campaignId,
+      campaignContactId,
+    });
   }
 
   /**
@@ -320,17 +285,17 @@ export class AiAnalysisProcessor extends WorkerHost {
       // Upsert: a contact who replies multiple times must not create a new lead
       // each time. Previously every qualifying reply inserted a duplicate row
       // and re-incremented stats_leads, inflating the pipeline.
+      //
+      // Scoped to the contact alone, matching InboundAiService: the owner's rule is one
+      // lead per person who replied. Including campaign_id in the lookup meant the lead
+      // the webhook path had just created without a campaign link was invisible here,
+      // and a second row was inserted for the same reply.
       const existingLead = await this.leadRepo.findOne({
-        where: {
-          contact_id: contactId,
-          ...(campaignId ? { campaign_id: campaignId } : {}),
-        },
+        where: { contact_id: contactId },
+        order: { created_at: 'ASC' },
       });
 
       const leadFields = {
-        status: (analysis.interest_level === 'high'
-          ? 'interested'
-          : 'engaged') as any,
         product_interest: analysis.product_interest,
         destinations: analysis.destination_interest ?? [],
         travel_period: analysis.travel_period,
@@ -339,8 +304,18 @@ export class AiAnalysisProcessor extends WorkerHost {
         lead_score: analysis.lead_score,
       };
 
+      const classifiedStatus =
+        analysis.interest_level === 'high' ? LeadStatus.INTERESTED : LeadStatus.ENGAGED;
+
       if (existingLead) {
-        await this.leadRepo.update(existingLead.id, leadFields);
+        // Enrichment never regresses the funnel. A later reply classified as merely
+        // engaged must not pull a lead a human already qualified, won or closed back to
+        // an earlier status, so the status is only written when it moves forward.
+        const nextStatus = advanceLeadStatus(existingLead.status, classifiedStatus);
+        await this.leadRepo.update(existingLead.id, {
+          ...leadFields,
+          ...(nextStatus ? { status: nextStatus } : {}),
+        });
         this.logger.log(
           `Lead ${existingLead.id} updated (score ${analysis.lead_score}) for contact ${contactId}`,
         );
@@ -350,6 +325,7 @@ export class AiAnalysisProcessor extends WorkerHost {
           campaign_id: campaignId,
           campaign_contact_id: campaignContactId,
           source: 'whatsapp_campaign',
+          status: classifiedStatus,
           ...leadFields,
         });
         await this.leadRepo.save(leadEntity);
