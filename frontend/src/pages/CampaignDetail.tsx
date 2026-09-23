@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card,
   Table,
@@ -21,6 +21,7 @@ import {
   Alert,
   Divider,
   Switch,
+  Tooltip,
 } from 'antd';
 import {
   PlayCircleOutlined,
@@ -43,6 +44,10 @@ import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import StatusTag from '../components/StatusTag';
 import LocationFilter, { type LocationFilterValue } from '../components/LocationFilter';
+import {
+  useCampaignDelete,
+  ACTIVE_CAMPAIGN_DELETE_HINT,
+} from '../hooks/useCampaignDelete';
 import DatasetFilter, {
   EMPTY_DATASET_FILTER,
   type DatasetFilterValue,
@@ -140,6 +145,7 @@ interface Template {
 
 export default function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [campaign, setCampaign] = useState<CampaignData | null>(null);
   const [stats, setStats] = useState<CampaignStats>({ sent: 0, delivered: 0, read: 0, replied: 0, leads: 0 });
   const [contacts, setContacts] = useState<CampaignContact[]>([]);
@@ -335,6 +341,19 @@ export default function CampaignDetail() {
     } catch {
       message.error('Failed to pause');
     }
+  };
+
+  /* ── Delete ────────────────────────────────────────
+   * Shares the confirmation and the request with the campaign list, so both places
+   * make the same promise about what survives. On success there is nothing left to
+   * show here, so navigate back to the list rather than leave a page describing a
+   * campaign that no longer exists.
+   */
+  const { contextHolder: deleteContextHolder, confirmDelete, deletingId } = useCampaignDelete();
+
+  const handleDeleteCampaign = () => {
+    if (!campaign) return;
+    confirmDelete(campaign, () => navigate('/campaigns', { replace: true }));
   };
 
   /**
@@ -721,6 +740,7 @@ export default function CampaignDetail() {
 
   return (
     <div>
+      {deleteContextHolder}
       <PageHeader
         title={campaign.name}
         subtitle={[campaign.product, campaign.target_country && `Target: ${campaign.target_country}`].filter(Boolean).join(' · ')}
@@ -736,6 +756,26 @@ export default function CampaignDetail() {
                 Activate
               </Button>
             )}
+            {/* Disabled with the reason on hover while active — the server refuses it,
+                and learning that from a failed request after confirming is worse than
+                never being offered the action. */}
+            <Tooltip
+              title={
+                campaign.status === 'active'
+                  ? ACTIVE_CAMPAIGN_DELETE_HINT
+                  : 'Leads and message history are kept'
+              }
+            >
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                disabled={campaign.status === 'active'}
+                loading={deletingId === campaign.id}
+                onClick={handleDeleteCampaign}
+              >
+                Delete
+              </Button>
+            </Tooltip>
           </>
         }
       />

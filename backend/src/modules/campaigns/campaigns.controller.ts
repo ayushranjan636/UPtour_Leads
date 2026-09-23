@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { CampaignsService } from './campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
@@ -86,6 +86,20 @@ export class CampaignsController {
   })
   sendPreview(@Param('id', ParseUUIDPipe) id: string) {
     return this.svc.getSendPreview(id);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete campaign',
+    description:
+      'Removes the campaign with its enrolments, templates and pending follow-ups. ' +
+      'Leads, deals, sent messages and AI analyses are kept and merely unlinked, so ' +
+      'no business record or conversation history is lost. Refused while the campaign ' +
+      'is active — pause it first. Returns what was removed and what was preserved.',
+  })
+  remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.deleteCampaign(id);
   }
 
   @Get(':id/contacts')

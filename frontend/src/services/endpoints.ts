@@ -110,6 +110,31 @@ export const companiesAPI = {
 };
 
 /* ── Campaigns ────────────────────────────────────── */
+
+/**
+ * Result of `DELETE /campaigns/:id`.
+ *
+ * `removed` is campaign-owned scaffolding; `preserved` is business record that outlived
+ * the campaign and was only unlinked from it. Reported so the operator can confirm from
+ * the toast that their leads and message history are still there.
+ */
+export interface CampaignDeletionReport {
+  id: string;
+  name: string;
+  deleted: true;
+  removed: {
+    campaign_contacts: number;
+    message_templates: number;
+    followup_jobs: number;
+  };
+  preserved: {
+    leads: number;
+    messages: number;
+    ai_analyses: number;
+    collection_jobs: number;
+  };
+}
+
 export const campaignsAPI = {
   list: (params?: Record<string, unknown>) =>
     api.get('/campaigns', { params }),
@@ -119,6 +144,14 @@ export const campaignsAPI = {
     api.patch(`/campaigns/${id}`, data),
   activate: (id: string) => api.post(`/campaigns/${id}/activate`),
   pause: (id: string) => api.post(`/campaigns/${id}/pause`),
+  /**
+   * Permanently deletes the campaign with its enrolments, templates and pending
+   * follow-ups. Leads, deals and message history are kept and merely unlinked, so
+   * nothing the campaign earned is lost. Refused for an `active` campaign — pause it
+   * first. Returns what was removed and what was preserved.
+   */
+  remove: (id: string) =>
+    api.delete<CampaignDeletionReport>(`/campaigns/${id}`),
   addContacts: (id: string, contactIds: string[]) =>
     api.post(`/campaigns/${id}/contacts`, { contactIds }),
   /**

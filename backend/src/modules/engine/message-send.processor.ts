@@ -94,7 +94,21 @@ export class MessageSendProcessor extends WorkerHost {
         // strings in every outbound message.
         relations: ['contact', 'contact.company', 'campaign'],
       });
-      if (!cc) throw new Error(`CampaignContact ${campaignContactId} not found`);
+
+      // A deleted campaign is an expected outcome, not a failure.
+      //
+      // Deleting a campaign removes its campaign_contacts, but jobs already enqueued
+      // for them stay in the queue (some delayed by hours under the pacing rules) and
+      // run afterwards. Returning `skipped` here means those jobs retire quietly
+      // instead of throwing: throwing would burn both attempts, write a `failed`
+      // message row whose campaign_contact_id no longer satisfies its foreign key,
+      // and fill the log with errors for work that was deliberately cancelled.
+      if (!cc || !cc.campaign) {
+        this.logger.log(
+          `Skipped send for CC ${campaignContactId}: its campaign was deleted before the job ran`,
+        );
+        return { skipped: true, reason: 'campaign_deleted' };
+      }
 
       const contact = cc.contact;
       const campaign = cc.campaign;
@@ -277,11 +291,23 @@ export class MessageSendProcessor extends WorkerHost {
     }
 
     // A human taking over between queue and send must win.
+    //
+    // The lookup doubles as an existence check: if the campaign was deleted while this
+    // reply waited in the delay queue the enrolment is gone, and writing the message
+    // with that id would violate its foreign key and lose the reply entirely. The
+    // answer still belongs to the contact, so it is stored unattributed instead.
+    let linkedCampaignContactId = campaignContactId ?? null;
     if (campaignContactId) {
       const cc = await this.ccRepo.findOne({ where: { id: campaignContactId } });
       if (cc?.mode === 'human') {
         this.logger.log(`Skipped AI reply to ${contactId}: human took over`);
         return { skipped: true, reason: 'human_takeover' };
+      }
+      if (!cc) {
+        this.logger.log(
+          `AI reply to ${contactId} kept without a campaign link: enrolment ${campaignContactId} was deleted`,
+        );
+        linkedCampaignContactId = null;
       }
     }
 
@@ -301,7 +327,7 @@ export class MessageSendProcessor extends WorkerHost {
 
     await this.messageRepo.save(
       this.messageRepo.create({
-        campaign_contact_id: campaignContactId ?? (null as any),
+        campaign_contact_id: linkedCampaignContactId ?? (null as any),
         contact_id: contactId,
         direction: 'outgoing' as any,
         type: (mediaType ?? 'text') as any,

@@ -19,6 +19,7 @@ import {
   Alert,
   Switch,
   message,
+  Tooltip,
 } from 'antd';
 import {
   PlusOutlined,
@@ -30,10 +31,15 @@ import {
   RocketOutlined,
   TeamOutlined,
   RobotOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import PageHeader from '../components/PageHeader';
 import StatusTag from '../components/StatusTag';
+import {
+  useCampaignDelete,
+  ACTIVE_CAMPAIGN_DELETE_HINT,
+} from '../hooks/useCampaignDelete';
 import DatasetFilter, {
   EMPTY_DATASET_FILTER,
   type DatasetFilterValue,
@@ -284,6 +290,20 @@ export default function Campaigns() {
     }
   };
 
+  /* ── Delete ────────────────────────────────────────
+   * Offered on the cards as well as on the detail header: cleaning up several dead
+   * drafts is a list-level job, and making the operator open each campaign to remove it
+   * is the reason unwanted campaigns accumulate. The confirmation and the request live
+   * in one shared hook so both entry points make the same promise about what is kept.
+   */
+  const { contextHolder: deleteContextHolder, confirmDelete, deletingId } = useCampaignDelete();
+
+  const handleDelete = (campaign: Campaign, e: React.MouseEvent) => {
+    // The card itself navigates to the campaign; deleting must not also open it.
+    e.stopPropagation();
+    confirmDelete(campaign, fetchCampaigns);
+  };
+
   if (!loading && data.length === 0) {
     return (
       <div>
@@ -335,6 +355,7 @@ export default function Campaigns() {
 
   return (
     <div>
+      {deleteContextHolder}
       <PageHeader
         title="Campaigns"
         subtitle={`${total} campaigns`}
@@ -403,6 +424,25 @@ export default function Campaigns() {
                           onClick={(e) => handleActivate(campaign.id, e)}
                         />
                       ) : null}
+                      {/* Disabled with the reason on hover while active, rather than
+                          offered and then refused by the server. */}
+                      <Tooltip
+                        title={
+                          campaign.status === 'active'
+                            ? ACTIVE_CAMPAIGN_DELETE_HINT
+                            : 'Delete campaign — leads and message history are kept'
+                        }
+                      >
+                        <Button
+                          size="small"
+                          danger
+                          aria-label={`Delete campaign ${campaign.name}`}
+                          icon={<DeleteOutlined />}
+                          disabled={campaign.status === 'active'}
+                          loading={deletingId === campaign.id}
+                          onClick={(e) => handleDelete(campaign, e)}
+                        />
+                      </Tooltip>
                     </Flex>
                   </Flex>
 
