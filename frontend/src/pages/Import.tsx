@@ -248,7 +248,7 @@ export default function Import() {
             </Text>
             {preview.rows.length > 0 && (
               <Alert
-                message={`Preview: First ${Math.min(preview.rows.length, 3)} rows shown below the mapping`}
+                title={`Preview: First ${Math.min(preview.rows.length, 3)} rows shown below the mapping`}
                 type="info"
                 showIcon
                 style={{ marginBottom: space.xl, borderRadius: radius.lg }}

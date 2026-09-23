@@ -291,7 +291,7 @@ export default function DataCollector() {
         <Alert
           type="warning"
           showIcon
-          message="Google Maps data source not configured"
+          title="Google Maps data source not configured"
           description={sourceMessage}
           style={{ marginBottom: space.xl, borderRadius: radius.lg }}
         />

@@ -1078,7 +1078,7 @@ function SendReviewModal({
       ) : (
         <Flex vertical gap={space.lg} style={{ paddingTop: space.sm }}>
           {preview.blockers.map((b, i) => (
-            <Alert key={i} type="error" showIcon message={b} />
+            <Alert key={i} type="error" showIcon title={b} />
           ))}
 
           <div
@@ -1112,7 +1112,7 @@ function SendReviewModal({
               type="warning"
               showIcon
               icon={<WarningOutlined />}
-              message={`${preview.audience.unverified.toLocaleString()} ${
+              title={`${preview.audience.unverified.toLocaleString()} ${
                 preview.audience.unverified === 1 ? 'number has' : 'numbers have'
               } not been verified on WhatsApp`}
               description="Unverified numbers may fail to deliver, which can hurt sender reputation."

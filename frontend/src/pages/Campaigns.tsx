@@ -528,7 +528,19 @@ function CampaignModal({
       okText="Create Campaign"
       width={520}
     >
-      <Form form={form} layout="vertical" style={{ marginTop: space.lg }}>
+      <Form
+        form={form}
+        layout="vertical"
+        style={{ marginTop: space.lg }}
+        // Defaults must live here, not as `defaultValue` on the child input. Ant Design
+        // fields are controlled by the form store, so a `defaultValue` is ignored
+        // entirely — the picker rendered blank and the operator could not see which
+        // send window they were about to accept. (The saved campaign was still safe:
+        // the column itself defaults to 09:00-18:00.)
+        initialValues={{
+          send_window: [dayjs('09:00', 'HH:mm'), dayjs('18:00', 'HH:mm')],
+        }}
+      >
         <Form.Item name="name" label="Campaign Name" rules={[{ required: true }]}>
           <Input placeholder="e.g. Japan Golden Route 2026" />
         </Form.Item>
@@ -583,7 +595,7 @@ function CampaignModal({
           <Alert
             type="warning"
             showIcon
-            message="Without a first message you'll need to add a message template before this campaign can send."
+            title="Without a first message you'll need to add a message template before this campaign can send."
             style={{ marginBottom: space.lg, borderRadius: radius.lg }}
           />
         )}
@@ -706,7 +718,6 @@ function CampaignModal({
           <Form.Item name="send_window" label="Send Window" style={{ flex: 1 }}>
             <TimePicker.RangePicker
               format="HH:mm"
-              defaultValue={[dayjs('09:00', 'HH:mm'), dayjs('18:00', 'HH:mm')]}
               style={{ width: '100%' }}
             />
           </Form.Item>

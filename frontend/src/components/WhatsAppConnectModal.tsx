@@ -198,7 +198,7 @@ export default function WhatsAppConnectModal({
       }
     >
       {error ? (
-        <Alert type="error" showIcon message="Connection failed" description={error} />
+        <Alert type="error" showIcon title="Connection failed" description={error} />
       ) : (
         <Flex vertical align="center" gap={space.lg} style={{ paddingTop: space.sm }}>
           <div

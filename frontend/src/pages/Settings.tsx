@@ -246,7 +246,7 @@ function WhatsAppTab() {
             <Alert
               type="error"
               showIcon
-              message="Could not read the WhatsApp connection state."
+              title="Could not read the WhatsApp connection state."
               description="The API or the messaging gateway is unreachable. Campaigns cannot send until it recovers."
             />
           )}
