@@ -186,7 +186,19 @@ export class SendDistributorService {
     const dailyLimit = campaign.daily_send_limit || 100;
     if (todaySent >= dailyLimit) return;
 
-    // 3. Calculate batch size for this minute
+    // 3. Respect the randomised gap chosen after the previous send.
+    //
+    // Without this gate the cron period *became* the pacing. A typical campaign
+    // computes a batch of 1 (30/day over a 9h window rounds up to one per minute), and
+    // with a single message per batch the within-batch randomisation below never runs,
+    // so every message was enqueued with zero delay exactly 60s apart. Perfectly
+    // regular spacing is the single most machine-like signal a sender can emit, which
+    // is precisely what the humanised delays exist to avoid. Holding the gap in Redis
+    // makes it apply *across* ticks, so spacing is irregular however small the batch.
+    const gateMs = await this.getNextSendGate(campaign);
+    if (gateMs !== null && Date.now() < gateMs) return;
+
+    // 4. Calculate batch size for this cycle
     const batchSize = this.calculateBatchSize(campaign, todaySent);
     if (batchSize <= 0) return;
 
@@ -292,11 +304,53 @@ export class SendDistributorService {
       // Update daily counter in Redis
       await this.incrementTodaySent(campaign, queuedCount);
 
+      // Arm the gate for the next cycle with a freshly drawn gap, measured from the
+      // last message in this batch. This is what makes the spacing irregular when the
+      // batch is a single message and the within-batch randomisation cannot apply.
+      await this.armNextSendGate(
+        campaign,
+        cumulativeDelay + this.humanizedGap(delayPerMessage),
+      );
+
       this.logger.log(
         `Campaign ${campaign.name}: queued ${queuedCount} messages ` +
         `(${todaySent + queuedCount}/${dailyLimit} today)`,
       );
     }
+  }
+
+  /** Redis key holding the epoch-ms before which this campaign must not send again. */
+  private sendGateKey(campaign: Campaign): string {
+    return `campaign:${campaign.id}:next-send-at`;
+  }
+
+  /**
+   * When this campaign may next enqueue, or null when it may send immediately.
+   *
+   * A missing key means "no gap pending" — a fresh campaign sends on its first tick
+   * rather than waiting out a delay it never earned.
+   */
+  private async getNextSendGate(campaign: Campaign): Promise<number | null> {
+    const at = await this.redis
+      .get<number>(this.sendGateKey(campaign))
+      // Redis being unavailable must not stall a campaign; fall back to sending.
+      .catch(() => null);
+    return typeof at === 'number' ? at : null;
+  }
+
+  /** Hold the next send until `gapMs` from now. */
+  private async armNextSendGate(campaign: Campaign, gapMs: number): Promise<void> {
+    // TTL follows the gap so a stale gate can never outlive its purpose and wedge a
+    // campaign; +60s of slack covers the cron tick that reads it.
+    const ttlSeconds = Math.ceil(gapMs / 1000) + 60;
+    await this.redis
+      .set(this.sendGateKey(campaign), Date.now() + gapMs, ttlSeconds)
+      .catch((err) =>
+        this.logger.warn(
+          `Could not persist the send gate for ${campaign.name}; ` +
+            `pacing falls back to the cron period: ${(err as Error).message}`,
+        ),
+      );
   }
 
   /**
