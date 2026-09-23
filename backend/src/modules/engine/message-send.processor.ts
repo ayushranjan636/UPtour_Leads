@@ -79,6 +79,9 @@ export class MessageSendProcessor extends WorkerHost {
 
     const { campaignContactId, campaignId, contactId, sessionId } = job.data;
     const startTime = Date.now();
+    // Hoisted so the catch block can record what we attempted to send. Undefined when
+    // the failure happened before rendering (e.g. no active template).
+    let renderedBodyForAudit: string | undefined;
 
     try {
       // 1. Load entities
@@ -120,6 +123,7 @@ export class MessageSendProcessor extends WorkerHost {
 
       // 3. Render template
       const renderedBody = this.renderTemplate(activeTemplate.body, contact, campaign);
+      renderedBodyForAudit = renderedBody;
 
       // 4. Format chat ID for OpenWA (shared helper — the manual send path used to
       //    build this differently and left the leading `+` in, which the gateway rejects)
@@ -208,6 +212,31 @@ export class MessageSendProcessor extends WorkerHost {
     } catch (err) {
       const durationMs = Date.now() - startTime;
       this.logger.error(`Failed to send message for CC ${campaignContactId}: ${err.message}`);
+
+      // Record *why* it failed, not just that it did.
+      //
+      // Previously only campaign_contacts.status was set, so a failed row had no message
+      // and no reason: the UI showed a bare "Failed" and the cause could only be found by
+      // grepping server logs. Persisting a row makes the reason visible in the campaign
+      // and conversation views. Best-effort — a bookkeeping failure must not mask the
+      // original send error, which BullMQ still needs to see to retry.
+      try {
+        await this.messageRepo.save(
+          this.messageRepo.create({
+            campaign_contact_id: campaignContactId,
+            contact_id: contactId,
+            direction: 'outgoing' as any,
+            type: 'text' as any,
+            body: renderedBodyForAudit ?? '',
+            status: 'failed' as any,
+            failed_reason: String(err?.message ?? err).slice(0, 500),
+          }),
+        );
+      } catch (auditErr) {
+        this.logger.warn(
+          `Could not record the failure reason for CC ${campaignContactId}: ${(auditErr as Error).message}`,
+        );
+      }
 
       // Mark as failed
       await this.ccRepo.update(campaignContactId, { status: 'failed' as any });

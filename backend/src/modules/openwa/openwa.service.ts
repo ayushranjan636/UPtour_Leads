@@ -74,15 +74,32 @@ export class OpenwaService {
     const explicit = preferred?.trim();
     // Guard against the historical placeholder leaking back in from old rows.
     if (explicit && explicit !== 'default') return explicit;
-    if (this.configuredSessionId && this.configuredSessionId !== 'default') {
-      return this.configuredSessionId;
-    }
     if (this.discoveredSessionId) return this.discoveredSessionId;
 
     const sessions = await this.getSessions().catch(() => [] as any[]);
     if (!Array.isArray(sessions) || sessions.length === 0) {
       throw new ServiceUnavailableException(
         'No WhatsApp session exists on the gateway. Create one and scan the QR code before sending.',
+      );
+    }
+
+    // A configured id is only honoured while the gateway still has it.
+    //
+    // Re-linking WhatsApp mints a brand new session id, which leaves OPENWA_SESSION_ID
+    // pointing at a session that no longer exists. Trusting it blindly meant every send
+    // failed with "Session is not active" even though a healthy session was sitting
+    // right there, and the auto-discovery below could never be reached. Preferring the
+    // configured session when it is genuinely usable keeps multi-session setups
+    // deterministic; falling back keeps a single-session setup self-healing.
+    const configured = this.configuredSessionId?.trim();
+    if (configured && configured !== 'default') {
+      const match = sessions.find((s) => s?.id === configured);
+      if (match?.status === SENDABLE_STATUS) return configured;
+      this.logger.warn(
+        match
+          ? `Configured OPENWA_SESSION_ID ${configured} is "${match.status}", not ${SENDABLE_STATUS}; looking for another connected session.`
+          : `Configured OPENWA_SESSION_ID ${configured} no longer exists on the gateway ` +
+              '(it was probably re-linked, which mints a new id); looking for a connected session.',
       );
     }
 
