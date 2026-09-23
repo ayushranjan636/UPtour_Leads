@@ -22,3 +22,7 @@ coverage/
 # Local volume backups. These contain WhatsApp session credentials and message
 # history — never commit them.
 /.backups/
+
+# There is no root package.json: this is a two-app repo (backend/ and frontend/).
+# A root lockfile is always an artifact of running npm from the wrong directory.
+/package-lock.json

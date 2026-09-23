@@ -9,6 +9,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Select,
   TimePicker,
   Typography,
   Flex,
@@ -26,11 +27,16 @@ import {
   PlayCircleOutlined,
   PauseCircleOutlined,
   RocketOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import PageHeader from '../components/PageHeader';
 import StatusTag from '../components/StatusTag';
-import { campaignsAPI } from '../services/endpoints';
+import DatasetFilter, {
+  EMPTY_DATASET_FILTER,
+  type DatasetFilterValue,
+} from '../components/DatasetFilter';
+import { campaignsAPI, contactsAPI } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
@@ -72,6 +78,57 @@ export default function Campaigns() {
   const [saving, setSaving] = useState(false);
   const navigate = useNavigate();
 
+  /* ── Audience for the new campaign ─────────────────
+   * Held here rather than inside CampaignModal because the submit handler lives
+   * here, and because the modal is mounted from two places (empty state and list)
+   * — one owner keeps the selection and the reset-on-create in a single spot.
+   */
+  const [audienceGroups, setAudienceGroups] = useState<string[]>([]);
+  const [audienceDatasets, setAudienceDatasets] =
+    useState<DatasetFilterValue>(EMPTY_DATASET_FILTER);
+  const [availableGroups, setAvailableGroups] =
+    useState<{ name: string; contactCount: number }[]>([]);
+  /**
+   * Last resolved count, tagged with the audience it was resolved for. Tagging (as
+   * opposed to a bare number) means a count is never shown against a selection it
+   * does not belong to: the moment the filter changes the old number stops matching
+   * and the UI falls back to "counting…" instead of flashing a stale figure.
+   * `count: null` records a failed lookup for that same audience.
+   */
+  const [countResult, setCountResult] =
+    useState<{ key: string; count: number | null } | null>(null);
+
+  /**
+   * Only keys that actually hold values are included: an empty array would tell the
+   * backend "filter on nothing", and an absent audience means "start empty".
+   *
+   * The same object feeds the live count and the create payload, so the number the
+   * operator is shown and the set that gets enrolled can never diverge.
+   */
+  const audienceParams = useCallback((): Record<string, unknown> => {
+    const params: Record<string, unknown> = {};
+    if (audienceGroups.length) params.groups = audienceGroups;
+    if (audienceDatasets.collection_job_ids.length) {
+      params.collection_job_ids = audienceDatasets.collection_job_ids;
+    }
+    if (audienceDatasets.import_file_ids.length) {
+      params.import_file_ids = audienceDatasets.import_file_ids;
+    }
+    return params;
+  }, [audienceGroups, audienceDatasets]);
+
+  const audienceKey = JSON.stringify(audienceParams());
+  const hasAudience = Object.keys(audienceParams()).length > 0;
+  /** True while the count in hand does not describe the current selection. */
+  const countLoading = hasAudience && countResult?.key !== audienceKey;
+  const audienceCount = countResult?.key === audienceKey ? countResult.count : null;
+
+  const resetAudience = useCallback(() => {
+    setAudienceGroups([]);
+    setAudienceDatasets(EMPTY_DATASET_FILTER);
+    setCountResult(null);
+  }, []);
+
   const fetchCampaigns = useCallback(async () => {
     setLoading(true);
     try {
@@ -88,6 +145,53 @@ export default function Campaigns() {
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
+
+  // Group labels are loaded when the modal opens, not once on mount, so groups
+  // created since this page rendered still show up.
+  useEffect(() => {
+    if (!modalOpen) return;
+    let cancelled = false;
+    contactsAPI
+      .groups()
+      .then(({ data: groups }) => { if (!cancelled) setAvailableGroups(groups ?? []); })
+      // Losing the suggestions is survivable — the select stays mounted and usable.
+      .catch(() => { if (!cancelled) setAvailableGroups([]); });
+    return () => { cancelled = true; };
+  }, [modalOpen]);
+
+  /**
+   * Live audience size. Debounced because every select change rewrites the filter
+   * and the count is an unpaginated COUNT query. `cancelled` plus the audience key
+   * stored alongside the number mean a slow earlier response can never overwrite a
+   * newer one.
+   *
+   * Skipped entirely when nothing is selected: showing the full contact total there
+   * would imply the campaign is about to enrol everyone, which it is not.
+   */
+  useEffect(() => {
+    if (!modalOpen || !hasAudience) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const { data: res } = await contactsAPI.count({
+          ...audienceParams(),
+          // Opted-out and suppressed contacts are never enrolled, so counting them
+          // would promise an audience the create could not deliver.
+          reachable_only: true,
+        });
+        if (!cancelled) setCountResult({ key: audienceKey, count: res?.count ?? 0 });
+      } catch {
+        if (!cancelled) setCountResult({ key: audienceKey, count: null });
+      }
+    }, 400);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [modalOpen, hasAudience, audienceKey, audienceParams]);
+
+  const closeModal = () => {
+    setModalOpen(false);
+    form.resetFields();
+    resetAudience();
+  };
 
   const handleCreate = async () => {
     try {
@@ -115,10 +219,35 @@ export default function Campaigns() {
       if (firstMessage) {
         payload.first_message = firstMessage;
       }
-      await campaignsAPI.create(payload);
-      message.success('Campaign created');
+      // Omitted entirely when nothing is selected — an empty object would still be a
+      // filter, and "no audience" must mean "create the campaign empty".
+      const audience = audienceParams();
+      const wantsAudience = Object.keys(audience).length > 0;
+      if (wantsAudience) {
+        payload.audience = audience;
+      }
+      const { data: created } = await campaignsAPI.create(payload);
+      // The create response carries the campaign, not the enrolment result, so the
+      // enrolled count is read back from the campaign's contact list. Best-effort:
+      // enrolment happens server-side regardless, so a failure here only costs us
+      // the richer toast.
+      let enrolled: number | null = null;
+      if (wantsAudience && created?.id) {
+        try {
+          const { data: res } = await campaignsAPI.getContacts(created.id, { page: 1, limit: 1 });
+          enrolled = res?.total ?? null;
+        } catch {
+          enrolled = null;
+        }
+      }
+      message.success(
+        enrolled && enrolled > 0
+          ? `Campaign created — ${enrolled.toLocaleString()} ${enrolled === 1 ? 'contact' : 'contacts'} enrolled`
+          : 'Campaign created',
+      );
       setModalOpen(false);
       form.resetFields();
+      resetAudience();
       fetchCampaigns();
     } catch {
       /* validation or API error */
@@ -184,7 +313,15 @@ export default function Campaigns() {
           form={form}
           saving={saving}
           onSave={handleCreate}
-          onCancel={() => { setModalOpen(false); form.resetFields(); }}
+          onCancel={closeModal}
+          audienceGroups={audienceGroups}
+          onAudienceGroupsChange={setAudienceGroups}
+          audienceDatasets={audienceDatasets}
+          onAudienceDatasetsChange={setAudienceDatasets}
+          availableGroups={availableGroups}
+          audienceCount={audienceCount}
+          countLoading={countLoading}
+          hasAudience={hasAudience}
         />
       </div>
     );
@@ -333,7 +470,15 @@ export default function Campaigns() {
         form={form}
         saving={saving}
         onSave={handleCreate}
-        onCancel={() => { setModalOpen(false); form.resetFields(); }}
+        onCancel={closeModal}
+        audienceGroups={audienceGroups}
+        onAudienceGroupsChange={setAudienceGroups}
+        audienceDatasets={audienceDatasets}
+        onAudienceDatasetsChange={setAudienceDatasets}
+        availableGroups={availableGroups}
+        audienceCount={audienceCount}
+        countLoading={countLoading}
+        hasAudience={hasAudience}
       />
     </div>
   );
@@ -345,12 +490,28 @@ function CampaignModal({
   saving,
   onSave,
   onCancel,
+  audienceGroups,
+  onAudienceGroupsChange,
+  audienceDatasets,
+  onAudienceDatasetsChange,
+  availableGroups,
+  audienceCount,
+  countLoading,
+  hasAudience,
 }: {
   open: boolean;
   form: ReturnType<typeof Form.useForm>[0];
   saving: boolean;
   onSave: () => void;
   onCancel: () => void;
+  audienceGroups: string[];
+  onAudienceGroupsChange: (next: string[]) => void;
+  audienceDatasets: DatasetFilterValue;
+  onAudienceDatasetsChange: (next: DatasetFilterValue) => void;
+  availableGroups: { name: string; contactCount: number }[];
+  audienceCount: number | null;
+  countLoading: boolean;
+  hasAudience: boolean;
 }) {
   // Live value so the "no opening message" warning appears and disappears as the
   // operator types, rather than only after a failed submit.
@@ -426,6 +587,118 @@ function CampaignModal({
             style={{ marginBottom: space.lg, borderRadius: radius.lg }}
           />
         )}
+
+        {/* ── Audience ────────────────────────────────────
+            Enrolling at creation time means a new campaign is not born empty and
+            blocked from activating. Everything here is optional: an untouched
+            audience creates the campaign with no contacts, exactly as before. */}
+        <div style={{ marginBottom: space.lg }}>
+          <Text
+            style={{
+              display: 'block',
+              fontSize: font.size.footnote,
+              color: color.textSecondary,
+              marginBottom: space.sm,
+            }}
+          >
+            Audience
+          </Text>
+
+          <Flex vertical gap={space.md}>
+            {/* Saved groups — the most direct answer to "campaign this set again":
+                a group is an explicit, curated selection, so it does not depend on
+                the contacts still sharing a location or coming from one scrape. */}
+            <Select
+              mode="multiple"
+              placeholder="All groups"
+              aria-label="Select contact groups"
+              allowClear
+              maxTagCount="responsive"
+              style={{ width: '100%' }}
+              value={audienceGroups}
+              onChange={(next: string[]) => onAudienceGroupsChange(next)}
+              options={availableGroups.map((g) => ({
+                value: g.name,
+                label: `${g.name} (${g.contactCount} contacts)`,
+              }))}
+              notFoundContent="No groups yet — create one from the Contacts page"
+            />
+
+            {/* Targets one scrape or upload exactly, which location filters cannot
+                express: two collection runs over the same city are indistinguishable
+                by country/state/city. */}
+            <DatasetFilter
+              value={audienceDatasets}
+              onChange={onAudienceDatasetsChange}
+              style={{ width: '100%' }}
+            />
+
+            {/* Nothing selected shows a muted hint rather than the full contact
+                total — a total there would read as "all of these are about to be
+                enrolled", which is the opposite of what happens. */}
+            {!hasAudience ? (
+              <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+                No audience selected — the campaign starts empty. You can add contacts
+                later from the campaign page.
+              </Text>
+            ) : (
+              <Flex
+                align="center"
+                gap={space.md}
+                style={{
+                  background: color.accentSofter,
+                  border: `1px solid ${color.separator}`,
+                  borderRadius: radius.lg,
+                  padding: `${space.md}px ${space.lg}px`,
+                }}
+              >
+                <TeamOutlined style={{ color: color.accent, fontSize: font.size.title3 }} />
+                {countLoading ? (
+                  <Flex align="center" gap={space.sm}>
+                    <Spin size="small" />
+                    <Text style={{ color: color.textSecondary }}>Counting matches…</Text>
+                  </Flex>
+                ) : audienceCount === null ? (
+                  <Text style={{ color: color.textSecondary }}>
+                    Could not count matches. Adjust the audience and try again.
+                  </Text>
+                ) : (
+                  <div>
+                    <Text
+                      strong
+                      style={{
+                        display: 'block',
+                        fontSize: font.size.title3,
+                        fontWeight: font.weight.semibold,
+                        lineHeight: 1.2,
+                        color: audienceCount > 0 ? color.text : color.textSecondary,
+                      }}
+                    >
+                      {audienceCount.toLocaleString()}{' '}
+                      <span
+                        style={{ fontSize: font.size.body, fontWeight: font.weight.regular }}
+                      >
+                        {audienceCount === 1 ? 'contact' : 'contacts'} will be enrolled
+                      </span>
+                    </Text>
+                    {audienceCount === 0 && (
+                      <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+                        No reachable contacts match this audience.
+                      </Text>
+                    )}
+                  </div>
+                )}
+              </Flex>
+            )}
+
+            <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+              Optional. The campaign starts with this audience; you can add more contacts
+              at any time from the campaign page. Opted-out and suppressed contacts are
+              always excluded.
+            </Text>
+          </Flex>
+        </div>
+
         <Flex gap={space.md}>
           <Form.Item name="daily_send_limit" label="Daily Send Limit" style={{ flex: 1 }}>
             <InputNumber min={1} max={500} placeholder="100" style={{ width: '100%' }} />

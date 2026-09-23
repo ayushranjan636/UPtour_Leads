@@ -157,6 +157,9 @@ export default function CampaignDetail() {
   const [audienceFilter, setAudienceFilter] = useState<LocationFilterValue>({});
   const [audienceDatasets, setAudienceDatasets] =
     useState<DatasetFilterValue>(EMPTY_DATASET_FILTER);
+  /** Saved contact groups selected for this audience. Several groups mean "in any". */
+  const [audienceGroups, setAudienceGroups] = useState<string[]>([]);
+  const [availableGroups, setAvailableGroups] = useState<{ name: string; contactCount: number }[]>([]);
   const [audienceSearch, setAudienceSearch] = useState('');
   const [audienceCount, setAudienceCount] = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(false);
@@ -295,6 +298,19 @@ export default function CampaignDetail() {
    * The same object is used for the live count and for the submit, so the number the
    * operator is shown and the set that gets enrolled can never diverge.
    */
+  // Load the saved group labels when the audience modal opens, so the list reflects
+  // groups created since this page was rendered.
+  useEffect(() => {
+    if (!addContactModal) return;
+    let cancelled = false;
+    contactsAPI
+      .groups()
+      .then(({ data }) => { if (!cancelled) setAvailableGroups(data ?? []); })
+      // Losing the suggestions is survivable; the rest of the filter still works.
+      .catch(() => { if (!cancelled) setAvailableGroups([]); });
+    return () => { cancelled = true; };
+  }, [addContactModal]);
+
   const filterParams = useCallback((): Record<string, unknown> => {
     const params: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(audienceFilter)) {
@@ -306,10 +322,11 @@ export default function CampaignDetail() {
     if (audienceDatasets.import_file_ids.length) {
       params.import_file_ids = audienceDatasets.import_file_ids;
     }
+    if (audienceGroups.length) params.groups = audienceGroups;
     const q = audienceSearch.trim();
     if (q) params.search = q;
     return params;
-  }, [audienceFilter, audienceDatasets, audienceSearch]);
+  }, [audienceFilter, audienceDatasets, audienceGroups, audienceSearch]);
 
   const openAddContacts = () => {
     setAddContactModal(true);
@@ -767,6 +784,25 @@ export default function CampaignDetail() {
                     value={audienceDatasets}
                     onChange={setAudienceDatasets}
                     style={{ width: '100%' }}
+                  />
+
+                  {/* Saved groups. The most direct answer to "campaign this set again":
+                      a group is an explicit, curated selection, so it does not depend on
+                      the contacts still sharing a location or coming from one scrape. */}
+                  <Select
+                    mode="multiple"
+                    placeholder="All groups"
+                    aria-label="Filter by group"
+                    allowClear
+                    maxTagCount="responsive"
+                    style={{ width: '100%' }}
+                    value={audienceGroups}
+                    onChange={(next: string[]) => setAudienceGroups(next)}
+                    options={availableGroups.map((g) => ({
+                      value: g.name,
+                      label: `${g.name} (${g.contactCount} contacts)`,
+                    }))}
+                    notFoundContent="No groups yet — create one from the Contacts page"
                   />
 
                   <Input

@@ -73,7 +73,7 @@ export class CampaignsService extends BaseService<Campaign> {
   ) { super(); }
 
   async createCampaign(dto: CreateCampaignDto, userId: string): Promise<Campaign> {
-    const { first_message, ...campaignFields } = dto;
+    const { first_message, audience, ...campaignFields } = dto;
 
     const campaign = await this.repo.save(
       this.repo.create({ ...campaignFields, created_by: userId, status: CampaignStatus.DRAFT }),
@@ -98,6 +98,30 @@ export class CampaignsService extends BaseService<Campaign> {
         }),
       );
       this.logger.log(`Campaign ${campaign.name} created with an opening message`);
+    }
+
+    // Enrol the audience in the same request.
+    //
+    // Creating a campaign and pointing it at an existing group or dataset is one
+    // intention, so it should be one action — otherwise a new campaign is always born
+    // empty and blocked from activating until the operator remembers a second step.
+    // Failure here must not lose the campaign: it exists and is editable, so the
+    // audience can be added from its page.
+    if (audience && Object.keys(audience).length > 0) {
+      try {
+        const result = await this.addContactsByFilter(
+          campaign.id,
+          audience as unknown as QueryContactDto,
+        );
+        this.logger.log(
+          `Campaign ${campaign.name}: enrolled ${result.added} of ${result.matched} matching contacts`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Campaign ${campaign.name} created, but its audience could not be enrolled: ` +
+            `${(err as Error).message}`,
+        );
+      }
     }
 
     return campaign;

@@ -6,6 +6,7 @@ import {
   Min,
   Max,
   MaxLength,
+  IsObject,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
@@ -110,4 +111,19 @@ export class CreateCampaignDto {
   // WhatsApp's own text limit; a longer body would be rejected at send time.
   @MaxLength(4096)
   first_message?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Audience to enrol immediately, expressed as a contact filter. Accepts the same ' +
+      'keys as GET /contacts — groups, collection_job_ids, import_file_ids, country, ' +
+      'state_region, district, city, agency_type, sources, search. Lets a campaign be ' +
+      'created and pointed at an existing dataset or saved group in one step instead of ' +
+      'creating it empty and adding an audience afterwards. Opted-out and suppressed ' +
+      'contacts are always excluded.',
+    example: { groups: ['Agra agencies'], reachable_only: true },
+    type: Object,
+  })
+  @IsOptional()
+  @IsObject()
+  audience?: Record<string, unknown>;
 }
