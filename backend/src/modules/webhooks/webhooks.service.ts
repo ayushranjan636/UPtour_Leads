@@ -371,7 +371,17 @@ export class WebhooksService {
           }
 
           const statsField = this.statusToStatsField(status);
-          if (statsField) {
+          // Count a status only on the transition *into* it, and never one the sender has
+          // already counted.
+          //
+          // WhatsApp acks the same message repeatedly as it progresses (sent, then
+          // delivered, then read) and re-acks on reconnect, while the send path already
+          // increments stats_sent at enqueue time. Incrementing on every ack therefore
+          // double-counted every send — a campaign that had sent 3 messages reported 6 —
+          // and inflated delivered and read on every redelivery. `shouldUpdate` is true
+          // only when this ack actually advances the contact's furthest-reached state,
+          // which is exactly once per status per message.
+          if (statsField && shouldUpdate && statsField !== 'stats_sent') {
             await this.campaignRepo.increment(
               { id: campaignContact.campaign_id },
               statsField,
