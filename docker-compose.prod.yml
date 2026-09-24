@@ -73,6 +73,13 @@ services:
       dockerfile: Dockerfile
     container_name: uptour-openwa
     restart: unless-stopped
+    # Bound to the host's loopback, not 0.0.0.0. The dashboard can send messages from the
+    # linked account and mint API keys, so it must not be reachable from the internet — but
+    # an SSH tunnel forwards to the *server's* localhost, so something has to listen there.
+    # 127.0.0.1 satisfies both: the security group never sees the port, and only someone
+    # already on the box (i.e. holding the SSH key) can reach it.
+    ports:
+      - '127.0.0.1:2785:2785'
     environment:
       - NODE_ENV=production
       - PORT=2785
