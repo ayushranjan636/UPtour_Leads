@@ -23,6 +23,11 @@ coverage/
 # history — never commit them.
 /.backups/
 
+# Production secrets and SSH keys. These grant full access to the live portal and its
+# WhatsApp account, so they live only on the host and on the operator's machine.
+.env.prod
+*.pem
+
 # There is no root package.json: this is a two-app repo (backend/ and frontend/).
 # A root lockfile is always an artifact of running npm from the wrong directory.
 /package-lock.json

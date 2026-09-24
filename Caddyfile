@@ -1,0 +1,53 @@
+# Caddy serves the portal on one origin and terminates TLS.
+#
+# Certificates are obtained and renewed from Let's Encrypt automatically, which is the
+# reason for choosing Caddy here: nginx would need certbot, a renewal timer and a reload
+# hook to achieve the same thing.
+#
+# The WhatsApp gateway is deliberately NOT published. Its dashboard can send messages from
+# the linked account and manage API keys, so it is reachable only over an SSH tunnel:
+#
+#   ssh -i ~/.ssh/uptour-portal.pem -L 2785:localhost:2785 ubuntu@<host>
+#
+# ...which requires the private key, and the security group permits SSH from one address.
+
+{
+	# Used for Let's Encrypt expiry notices and account recovery.
+	email {$ACME_EMAIL}
+}
+
+{$PORTAL_DOMAIN} {
+	encode zstd gzip
+
+	# API first: a more specific matcher must precede the SPA fallback, otherwise the
+	# static handler would answer /api/* with index.html.
+	handle /api/* {
+		reverse_proxy backend:3000
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	header {
+		# Tell browsers to stay on HTTPS for a year. Not preloaded — that is a one-way
+		# commitment for the whole domain, which is the owner's decision, not a default.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Hide the server banner: it names software and version to anyone scanning.
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		# The portal handles phone numbers and message bodies; logging full URLs and
+		# bodies would put personal data in plaintext on disk.
+		format console
+		level WARN
+	}
+}

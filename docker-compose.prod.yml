@@ -1,0 +1,139 @@
+# Production stack for the UPTour portal.
+#
+# Differs from the development compose in three ways that matter:
+#
+#  1. Only Caddy publishes ports. Postgres, Redis, the API and the WhatsApp gateway are
+#     reachable on the internal network alone, so the database is not exposed to the
+#     internet and the gateway dashboard — which can send messages from the linked
+#     account — is reachable only through an SSH tunnel.
+#  2. Caddy terminates TLS and obtains certificates from Let's Encrypt automatically.
+#  3. Everything is pinned to restart unless explicitly stopped, so a reboot brings the
+#     whole stack back without intervention.
+#
+# Usage: docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: uptour-caddy
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys. Without persistence every restart requests
+      # new certificates and quickly hits Let's Encrypt's rate limit.
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - PORTAL_DOMAIN=${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env.prod}
+      - ACME_EMAIL=${ACME_EMAIL:?set ACME_EMAIL for certificate expiry notices}
+    depends_on:
+      - frontend
+      - backend
+    networks: [uptour-net]
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: uptour-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${DATABASE_USERNAME:?}
+      - POSTGRES_PASSWORD=${DATABASE_PASSWORD:?}
+      - POSTGRES_DB=${DATABASE_NAME:?}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DATABASE_USERNAME}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [uptour-net]
+
+  redis:
+    image: redis:7-alpine
+    container_name: uptour-redis
+    restart: unless-stopped
+    # Persist the queue: BullMQ jobs and the send-pacing gate live here, so losing them
+    # on restart would drop scheduled sends mid-campaign.
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [uptour-net]
+
+  openwa:
+    build:
+      context: ${OPENWA_CONTEXT:-../OpenWA}
+      dockerfile: Dockerfile
+    container_name: uptour-openwa
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=2785
+      - API_MASTER_KEY=${OPENWA_MASTER_KEY:?must be >= 32 chars}
+      - DATABASE_PATH=/app/data/openwa.db
+      # Served behind Caddy over TLS; upgrading insecure requests breaks the dashboard
+      # when reached through an SSH tunnel on plain http://localhost.
+      - CSP_UPGRADE_INSECURE_REQUESTS=false
+      # The first chat-list sync after linking runs through the headless browser and can
+      # exceed puppeteer's default 180s, surfacing as a failed chat load.
+      - PUPPETEER_PROTOCOL_TIMEOUT_MS=300000
+      - SIMULATE_TYPING=true
+    volumes:
+      - openwa_data:/app/data
+    # Chromium's shared-memory default of 64MB is too small for WhatsApp Web and shows up
+    # as unexplained renderer crashes.
+    shm_size: '512mb'
+    networks: [uptour-net]
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: uptour-api
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      - NODE_ENV=production
+      # Service names, not localhost: inside the network each container is its own host.
+      - DATABASE_HOST=postgres
+      - REDIS_HOST=redis
+      - OPENWA_BASE_URL=http://openwa:2785/api
+      # Where the gateway posts delivery receipts and inbound replies. Container-internal,
+      # so it never leaves the host.
+      - OPENWA_WEBHOOK_URL=http://backend:3000/api/webhooks/openwa
+      - FRONTEND_URL=https://${PORTAL_DOMAIN}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [uptour-net]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked in at build time: Vite inlines env vars into the bundle, so this cannot be
+        # supplied at runtime. A relative path keeps the browser on one origin, which
+        # avoids CORS and means the same image works on any domain.
+        - VITE_API_URL=/api
+    container_name: uptour-web
+    restart: unless-stopped
+    networks: [uptour-net]
+
+volumes:
+  postgres_data:
+  redis_data:
+  openwa_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  uptour-net:
+    driver: bridge
