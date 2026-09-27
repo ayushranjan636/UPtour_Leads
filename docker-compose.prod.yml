@@ -92,6 +92,13 @@ services:
       # exceed puppeteer's default 180s, surfacing as a failed chat load.
       - PUPPETEER_PROTOCOL_TIMEOUT_MS=300000
       - SIMULATE_TYPING=true
+      # The gateway's SSRF guard blocks private destinations, which is correct — but our
+      # webhook receiver *is* an internal host (`backend` on the compose network), so
+      # registration failed with "Destination address is not allowed" and no delivery
+      # receipt or inbound reply ever arrived. Allowlisting this single hostname is the
+      # documented escape hatch, and is far narrower than turning the guard off: every
+      # other private address stays blocked.
+      - SSRF_ALLOWED_HOSTS=backend
     volumes:
       - openwa_data:/app/data
     # Chromium's shared-memory default of 64MB is too small for WhatsApp Web and shows up

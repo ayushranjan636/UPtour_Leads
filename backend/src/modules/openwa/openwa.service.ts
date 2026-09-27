@@ -7,6 +7,7 @@ import {
   OnApplicationBootstrap,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import axios, { AxiosInstance, AxiosError } from 'axios';
 
 /**
@@ -54,6 +55,11 @@ export class OpenwaService implements OnApplicationBootstrap {
    * every send. Invalidated whenever a send fails, in case the session changed.
    */
   private discoveredSessionId: string | null = null;
+  /**
+   * Session whose subscription is already confirmed, so the reconciler can skip the
+   * round-trip. Cleared implicitly by a new session id after a re-link.
+   */
+  private webhookVerifiedFor: string | null = null;
 
   constructor(private readonly configService: ConfigService) {
     const baseURL = this.configService.getOrThrow<string>('OPENWA_BASE_URL');
@@ -150,6 +156,34 @@ export class OpenwaService implements OnApplicationBootstrap {
         `Skipped webhook registration on boot: ${(err as Error).message}. ` +
           'It will be retried the next time WhatsApp is connected.',
       );
+    }
+  }
+
+  /**
+   * Keep the gateway subscription in place while the app runs.
+   *
+   * Boot-time registration alone is not enough, and the gap is not theoretical: WhatsApp
+   * was linked *after* the API had started, so registration had already been skipped and
+   * nothing retried it. Delivery receipts, read receipts and inbound replies were silently
+   * lost for an entire campaign — 51 messages sent, 0 delivered, 0 replies, with no error
+   * anywhere to suggest the portal had gone deaf.
+   *
+   * Re-linking also mints a new session id, which strands any previous subscription, so
+   * this reconciles rather than assuming one registration lasts forever. `ensureWebhook`
+   * is idempotent, so the steady-state cost is one cheap GET a minute.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async reconcileWebhook(): Promise<void> {
+    try {
+      const sessionId = await this.resolveSessionId();
+      if (sessionId === this.webhookVerifiedFor) return;
+
+      const result = await this.ensureWebhook(sessionId);
+      // Only cache success: a failed attempt must be retried, not remembered as done.
+      if (result) this.webhookVerifiedFor = sessionId;
+    } catch {
+      // No connected session yet. Expected while WhatsApp is unlinked, and logging every
+      // minute would bury real problems, so stay quiet and try again next tick.
     }
   }
 

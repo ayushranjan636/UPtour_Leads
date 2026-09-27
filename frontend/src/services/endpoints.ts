@@ -314,7 +314,48 @@ export const engineAPI = {
       | { campaign_id: string }
       | { daily_limit: number; window_start: string; window_end: string },
   ) => api.get<DistributionPlan>('/engine/distribution-plan', { params }),
+
+  /**
+   * The trigger conditions the sequence engine can actually act on.
+   *
+   * Fetched rather than hard-coded so the options the operator is offered cannot drift
+   * from what the engine evaluates. A step that looks configured but silently never
+   * fires is exactly the failure this list prevents.
+   */
+  getTriggerConditions: () =>
+    api.get<TriggerConditionsResponse>('/engine/trigger-conditions'),
+
+  /**
+   * Ask the engine what it makes of a specific stored value.
+   *
+   * The server answers, rather than the browser guessing, so "understood" in the UI means
+   * the same thing as "will fire" in the engine — there is no second copy of the
+   * interpretation rules to fall out of step.
+   */
+  checkTriggerCondition: (value: string) =>
+    api.get<TriggerConditionsResponse & { check: TriggerConditionCheck }>(
+      '/engine/trigger-conditions',
+      { params: { check: value } },
+    ),
 };
+
+export interface TriggerConditionOption {
+  value: string;
+  label: string;
+  description: string;
+}
+
+export interface TriggerConditionCheck {
+  raw: string;
+  understood: boolean;
+  condition: string | null;
+  matched_by: 'canonical' | 'alias' | 'phrase' | 'unrecognised';
+  description: string;
+}
+
+export interface TriggerConditionsResponse {
+  conditions: TriggerConditionOption[];
+}
 
 /* ── AI assistant ─────────────────────────────────── */
 

@@ -187,10 +187,14 @@ export class AiAnalysisProcessor extends WorkerHost {
       //    generated reply and a canned template for the same inbound message.
       if (campaignContactId && !replyQueued) {
         try {
-          await this.sequenceService.onAiAnalysisComplete(campaignContactId, {
-            intent: analysis.intent,
-            interest_level: analysis.interest_level,
-          });
+          await this.sequenceService.onAiAnalysisComplete(
+            campaignContactId,
+            analysis,
+            // The reply text is passed alongside the analysis so branch selection has a
+            // fallback when the model was not confident enough to be trusted with the
+            // choice — see classifyReply.
+            message.body ?? undefined,
+          );
         } catch (seqErr) {
           this.logger.warn(`Sequence check failed for CC ${campaignContactId}: ${seqErr.message}`);
         }

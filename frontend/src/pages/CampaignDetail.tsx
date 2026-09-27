@@ -52,6 +52,7 @@ import DatasetFilter, {
   EMPTY_DATASET_FILTER,
   type DatasetFilterValue,
 } from '../components/DatasetFilter';
+import TriggerConditionField from '../components/TriggerConditionField';
 import {
   campaignsAPI,
   templatesAPI,
@@ -60,6 +61,8 @@ import {
   aiAPI,
   type AiAutoReplySetting,
   type DistributionPlan,
+  type TriggerConditionCheck,
+  type TriggerConditionOption,
 } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
@@ -201,6 +204,16 @@ export default function CampaignDetail() {
   const [templateForm] = Form.useForm();
   const [savingTemplate, setSavingTemplate] = useState(false);
 
+  /**
+   * How the engine reads each template's trigger condition.
+   *
+   * Resolved server-side and keyed by the raw stored string, so the Templates tab shows
+   * what will actually happen rather than echoing text back at the operator. A step whose
+   * condition cannot be read is the thing that must be impossible to miss.
+   */
+  const [triggerConditions, setTriggerConditions] = useState<TriggerConditionOption[]>([]);
+  const [triggerChecks, setTriggerChecks] = useState<Record<string, TriggerConditionCheck>>({});
+
   const fetchCampaign = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -273,6 +286,84 @@ export default function CampaignDetail() {
       .catch(() => { if (!cancelled) setGlobalAi(null); });
     return () => { cancelled = true; };
   }, []);
+
+  /** The engine's own vocabulary, for labelling stored conditions in the Templates tab. */
+  useEffect(() => {
+    let cancelled = false;
+    engineAPI
+      .getTriggerConditions()
+      .then(({ data }) => { if (!cancelled) setTriggerConditions(data?.conditions ?? []); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * Resolve every distinct stored condition against the engine.
+   *
+   * One request per distinct value, not per template, and only for values the canonical
+   * list cannot already explain. The engine answers rather than the browser inferring, so
+   * "fires when…" in this tab is the same judgement the sender makes.
+   */
+  useEffect(() => {
+    const canonical = new Set(triggerConditions.map((c) => c.value));
+    const pending = Array.from(
+      new Set(
+        templates
+          .map((t) => (t.trigger_condition ?? '').trim())
+          .filter((raw) => raw && !canonical.has(raw) && !triggerChecks[raw]),
+      ),
+    );
+    if (!pending.length) return;
+
+    let cancelled = false;
+    Promise.all(
+      pending.map((raw) =>
+        engineAPI
+          .checkTriggerCondition(raw)
+          .then(({ data }) => [raw, data?.check] as const)
+          .catch(() => [raw, undefined] as const),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      setTriggerChecks((prev) => {
+        const resolved = results.filter(([, check]) => !!check);
+        // Returning `prev` unchanged when nothing resolved matters: a new object would
+        // change the dependency this effect reads and re-request the same failures on
+        // every render.
+        if (!resolved.length) return prev;
+        const next = { ...prev };
+        for (const [raw, check] of resolved) next[raw] = check!;
+        return next;
+      });
+    });
+
+    return () => { cancelled = true; };
+  }, [templates, triggerConditions, triggerChecks]);
+
+  /** What the engine will do with a stored condition. Never silent about it. */
+  const describeTrigger = useCallback(
+    (raw?: string): { label: string; understood: boolean } => {
+      const value = (raw ?? '').trim();
+      // An empty condition is the opening message, which is what the column default means.
+      if (!value) return { label: 'Sends immediately as the opening message', understood: true };
+
+      const canonical = triggerConditions.find((c) => c.value === value);
+      if (canonical) return { label: canonical.description, understood: true };
+
+      const check = triggerChecks[value];
+      // Still resolving, or the check could not be reached. Says so rather than rendering
+      // nothing: an absent explanation is how this step was able to look configured.
+      if (!check) return { label: 'Checking when this fires…', understood: true };
+
+      return {
+        label: check.understood
+          ? check.description
+          : 'Not understood — this step will never send',
+        understood: check.understood,
+      };
+    },
+    [triggerConditions, triggerChecks],
+  );
 
   /**
    * Writes the campaign's switch. The control is driven by `campaign`, which is only
@@ -560,6 +651,28 @@ export default function CampaignDetail() {
 
   const conversion = stats.sent > 0 ? ((stats.leads / stats.sent) * 100).toFixed(1) : '0';
 
+  /**
+   * Templates grouped by sequence step, steps ascending.
+   *
+   * Sorted on a copy: the previous version called `templates.sort()` during render, which
+   * mutates the state array in place.
+   */
+  const templateSteps = Array.from(
+    templates.reduce((acc, t) => {
+      const list = acc.get(t.sequence_order) ?? [];
+      list.push(t);
+      acc.set(t.sequence_order, list);
+      return acc;
+    }, new Map<number, Template[]>()),
+  )
+    .sort(([a], [b]) => a - b)
+    .map(([step, branches]) => ({
+      step,
+      // Same tiebreak the engine uses when two branches are equally specific, so the
+      // order shown here is the order it considers them in.
+      branches: branches.slice().sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    }));
+
   const statCards = [
     { icon: <SendOutlined />, title: 'Sent', value: stats.sent.toLocaleString(), accent: color.accent },
     { icon: <CheckCircleOutlined />, title: 'Delivered', value: stats.delivered.toLocaleString(), accent: color.accent },
@@ -660,51 +773,108 @@ export default function CampaignDetail() {
             </Empty>
           ) : (
             <>
-              {templates
-                .sort((a, b) => a.sequence_order - b.sequence_order)
-                .map((t) => (
-                  <Card
-                    key={t.id}
-                    size="small"
-                    title={
-                      <Flex justify="space-between" align="center">
-                        <Text strong>
-                          Step {t.sequence_order}: {t.name}
-                        </Text>
-                        <Flex gap={space.sm}>
-                          {t.trigger_condition && (
-                            <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
-                              Trigger: {t.trigger_condition}
-                            </Text>
-                          )}
-                          <Popconfirm
-                            title="Delete this template?"
-                            onConfirm={() => handleDeleteTemplate(t.id)}
+              {/* Grouped by step rather than listed flat, because several templates
+                  sharing a sequence_order are branches of one step: exactly one of them
+                  is sent per contact. A flat list read as five messages in a row. */}
+              {templateSteps.map(({ step, branches }) => (
+                <div key={step} style={{ marginBottom: space.xl }}>
+                  <Flex align="baseline" gap={space.sm} style={{ marginBottom: space.sm }}>
+                    <Text strong style={{ fontSize: font.size.callout }}>
+                      Step {step}
+                    </Text>
+                    {branches.length > 1 && (
+                      <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+                        {branches.length} branches — one is sent, whichever matches first
+                      </Text>
+                    )}
+                  </Flex>
+
+                  {branches.map((t) => {
+                    const trigger = describeTrigger(t.trigger_condition);
+                    return (
+                      <Card
+                        key={t.id}
+                        size="small"
+                        title={
+                          <Flex justify="space-between" align="center" gap={space.sm}>
+                            <Text strong>{t.name}</Text>
+                            <Popconfirm
+                              title="Delete this template?"
+                              onConfirm={() => handleDeleteTemplate(t.id)}
+                            >
+                              {/* No Tooltip wrapper here: inside a Popconfirm the tooltip
+                                  renders above the confirm popup and swallows the click. */}
+                              <Button
+                                type="text"
+                                size="small"
+                                danger
+                                title="Delete template"
+                                aria-label={`Delete template ${t.name}`}
+                                icon={<DeleteOutlined />}
+                              />
+                            </Popconfirm>
+                          </Flex>
+                        }
+                        style={{ borderRadius: radius.lg, marginBottom: space.md }}
+                      >
+                        <Flex vertical gap={space.sm}>
+                          {/* When it fires, stated before the message body: this is the
+                              part that was invisible while four of five steps were dead. */}
+                          <Flex
+                            align="flex-start"
+                            gap={space.sm}
+                            style={{
+                              background: trigger.understood ? color.fill : color.dangerSoft,
+                              borderRadius: radius.md,
+                              padding: `${space.sm}px ${space.md}px`,
+                            }}
                           >
-                            {/* No Tooltip wrapper here: inside a Popconfirm the tooltip
-                                renders above the confirm popup and swallows the click. */}
-                            <Button
-                              type="text"
-                              size="small"
-                              danger
-                              title="Delete template"
-                              aria-label={`Delete template ${t.name}`}
-                              icon={<DeleteOutlined />}
-                            />
-                          </Popconfirm>
+                            {trigger.understood ? (
+                              <CheckCircleOutlined
+                                style={{ color: color.success, marginTop: 2 }}
+                                aria-hidden
+                              />
+                            ) : (
+                              <WarningOutlined
+                                style={{ color: color.danger, marginTop: 2 }}
+                                aria-hidden
+                              />
+                            )}
+                            <Flex vertical gap={2}>
+                              <Text
+                                style={{
+                                  fontSize: font.size.caption,
+                                  color: trigger.understood ? color.text : color.danger,
+                                }}
+                              >
+                                {trigger.label}
+                              </Text>
+                              {t.trigger_condition && (
+                                <Text
+                                  style={{
+                                    fontSize: font.size.caption,
+                                    color: color.textSecondary,
+                                  }}
+                                >
+                                  Condition as saved: “{t.trigger_condition}”
+                                </Text>
+                              )}
+                            </Flex>
+                          </Flex>
+
+                          <TextArea
+                            value={t.body}
+                            readOnly
+                            aria-label={`Message body for ${t.name}`}
+                            autoSize={{ minRows: 2 }}
+                            style={{ border: 'none', background: color.fill, borderRadius: radius.md }}
+                          />
                         </Flex>
-                      </Flex>
-                    }
-                    style={{ borderRadius: radius.lg, marginBottom: space.md }}
-                  >
-                    <TextArea
-                      value={t.body}
-                      readOnly
-                      autoSize={{ minRows: 2 }}
-                      style={{ border: 'none', background: color.fill, borderRadius: radius.md }}
-                    />
-                  </Card>
-                ))}
+                      </Card>
+                    );
+                  })}
+                </div>
+              ))}
               <Button
                 icon={<PlusOutlined />}
                 style={{ marginTop: space.sm }}
@@ -1030,8 +1200,12 @@ export default function CampaignDetail() {
               />
             </Form.Item>
           </Flex>
-          <Form.Item name="trigger_condition" label="Trigger Condition">
-            <Input placeholder="e.g. no_reply_24h" />
+          <Form.Item
+            name="trigger_condition"
+            label="Trigger Condition"
+            htmlFor="template-trigger-condition"
+          >
+            <TriggerConditionField />
           </Form.Item>
         </Form>
       </Modal>

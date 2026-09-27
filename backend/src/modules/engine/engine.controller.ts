@@ -2,12 +2,39 @@ import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { SendDistributorService } from './send-distributor.service';
 import { DistributionPlanQueryDto } from './dto/distribution-plan.dto';
+import { listTriggerConditions, resolveTriggerCondition } from './trigger-conditions';
 
 @ApiTags('Engine')
 @ApiBearerAuth()
 @Controller('engine')
 export class EngineController {
   constructor(private readonly distributor: SendDistributorService) {}
+
+  @Get('trigger-conditions')
+  @ApiOperation({
+    summary: 'Sequence trigger conditions the engine can actually act on',
+    description:
+      'The authoring UI reads this rather than hard-coding a list, so the options an ' +
+      'operator is offered cannot drift from what the engine evaluates — a step that ' +
+      'looks configured but silently never fires is the failure this prevents. Pass ' +
+      '`check` to ask whether a specific stored value is understood, and what as.',
+  })
+  getTriggerConditions(@Query('check') check?: string) {
+    const conditions = listTriggerConditions();
+    if (check === undefined) return { conditions };
+
+    const resolved = resolveTriggerCondition(check);
+    return {
+      conditions,
+      check: {
+        raw: resolved.raw,
+        understood: resolved.matchedBy !== 'unrecognised',
+        condition: resolved.condition,
+        matched_by: resolved.matchedBy,
+        description: resolved.description,
+      },
+    };
+  }
 
   @Get('distribution-plan')
   @ApiOperation({
