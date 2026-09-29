@@ -274,6 +274,21 @@ export class SendDistributorService {
     const dailyLimit = campaign.daily_send_limit || 100;
     if (todaySent >= dailyLimit) return;
 
+    // 2b. Cap cold first contacts separately from the overall daily limit.
+    //
+    // Messaging a stranger and answering someone mid-conversation look nothing alike to
+    // WhatsApp's anti-abuse systems: unsolicited first contact is what gets an account
+    // reported and banned, while a reply to an ongoing thread is normal traffic. A single
+    // combined limit forces a bad trade — raise it and cold outreach becomes reckless,
+    // lower it and legitimate follow-ups get starved behind first touches.
+    //
+    // Counting first contacts on their own means follow-ups and sequence branches keep
+    // flowing at the normal pace once this cap is reached, and only new introductions stop
+    // for the day.
+    const newContactsToday = await this.getTodayFirstContacts(campaign);
+    const firstContactLimit = this.dailyNewContactLimit(campaign);
+    const firstContactsLeft = Math.max(0, firstContactLimit - newContactsToday);
+
     // 3. Respect the randomised gap chosen after the previous send.
     //
     // Without this gate the cron period *became* the pacing. A typical campaign
@@ -291,13 +306,23 @@ export class SendDistributorService {
     if (batchSize <= 0) return;
 
     // 4. Pick pending contacts
-    const pendingContacts = await this.ccRepo
+    const query = this.ccRepo
       .createQueryBuilder('cc')
       .innerJoinAndSelect('cc.contact', 'c')
       .where('cc.campaign_id = :campaignId', { campaignId: campaign.id })
       .andWhere('cc.status = :status', { status: 'pending' })
       .andWhere('c.is_opted_out = false')
-      .andWhere('c.is_suppressed = false')
+      .andWhere('c.is_suppressed = false');
+
+    // Exclude never-contacted rows once the cold-outreach cap is spent. `first_sent_at`
+    // is null only before the opening message, so it is exactly the first-touch marker;
+    // filtering in SQL means the batch fills with follow-ups that are still allowed
+    // rather than being wasted on contacts that would be skipped in the loop below.
+    if (firstContactsLeft === 0) {
+      query.andWhere('cc.first_sent_at IS NOT NULL');
+    }
+
+    const pendingContacts = await query
       .orderBy('cc.created_at', 'ASC')
       .limit(batchSize)
       .getMany();
@@ -310,9 +335,18 @@ export class SendDistributorService {
     // Accumulated offset for this batch. Each message adds its own randomly drawn
     // gap, so the queue has no constant period for WhatsApp to fingerprint.
     let cumulativeDelay = 0;
+    // Counted inside the loop as well as in SQL: a batch is selected once but enqueued one
+    // at a time, so without this a single cycle could overshoot the cap by a whole batch.
+    let firstContactsQueued = 0;
 
     for (let i = 0; i < pendingContacts.length; i++) {
       const cc = pendingContacts[i];
+      const isFirstContact = !cc.first_sent_at;
+      if (isFirstContact && firstContactsQueued >= firstContactsLeft) {
+        // Cold outreach for today is spent. Skip rather than break: later rows may be
+        // follow-ups, which remain allowed.
+        continue;
+      }
       const contact = cc.contact;
 
       // Verify WhatsApp number before sending
@@ -385,12 +419,16 @@ export class SendDistributorService {
       }
 
       queuedCount++;
+      if (isFirstContact) firstContactsQueued++;
       this.logger.log(`Contact ${cc.contact_id} queued with ${Math.round(delay / 1000)}s delay (batch ${queuedCount}/${pendingContacts.length})`);
     }
 
     if (queuedCount > 0) {
       // Update daily counter in Redis
       await this.incrementTodaySent(campaign, queuedCount);
+      if (firstContactsQueued > 0) {
+        await this.incrementTodayFirstContacts(campaign, firstContactsQueued);
+      }
 
       // Arm the gate for the next cycle with a freshly drawn gap, measured from the
       // last message in this batch. This is what makes the spacing irregular when the
@@ -629,8 +667,51 @@ export class SendDistributorService {
    * of UTC (e.g. Asia/Kolkata rolls at 05:30 local), letting a campaign send well
    * past its configured daily limit.
    */
-  private dailySentKey(campaign: Campaign): string {
-    const today = dayKeyIn(campaign.send_window_timezone);
+  /**
+   * How many people this campaign may introduce itself to today.
+   *
+   * Defaults to 30, the number an operator asked for. Deliberately conservative: cold
+   * first contact is the traffic that gets an account reported, and a WhatsApp ban costs
+   * far more than a slow ramp. Configurable per deployment via DAILY_NEW_CONTACT_LIMIT,
+   * and never allowed to exceed the campaign's own daily limit, which would be incoherent.
+   */
+  private dailyNewContactLimit(campaign: Campaign): number {
+    const raw = Number(this.config.get<string>('DAILY_NEW_CONTACT_LIMIT') ?? NaN);
+    const configured = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 30;
+    return Math.min(configured, campaign.daily_send_limit || 100);
+  }
+
+  /** Redis key counting cold first contacts, per campaign per day. */
+  private firstContactKey(campaign: Campaign): string {
+    const day = new Date().toISOString().slice(0, 10);
+    return `campaign:${campaign.id}:first-contacts:${day}`;
+  }
+
+  private async getTodayFirstContacts(campaign: Campaign): Promise<number> {
+    // A Redis outage must not silently lift the cap, so an unreadable counter is treated
+    // as the limit already being spent: follow-ups continue, cold outreach pauses.
+    try {
+      return (await this.redis.get<number>(this.firstContactKey(campaign))) ?? 0;
+    } catch {
+      this.logger.warn(
+        `Could not read today's new-contact count for ${campaign.name}; ` +
+          'holding cold outreach until Redis is readable again.',
+      );
+      return Number.MAX_SAFE_INTEGER;
+    }
+  }
+
+  private async incrementTodayFirstContacts(
+    campaign: Campaign,
+    count: number,
+  ): Promise<void> {
+    const key = this.firstContactKey(campaign);
+    const current = (await this.redis.get<number>(key).catch(() => 0)) ?? 0;
+    // Expires a little after midnight so the cap resets with the day on its own.
+    await this.redis.set(key, current + count, 36 * 60 * 60);
+  }
+
+  private dailySentKey(campaign: Campaign): string {    const today = dayKeyIn(campaign.send_window_timezone);
     return `daily:sent:${campaign.id}:${today}`;
   }
 

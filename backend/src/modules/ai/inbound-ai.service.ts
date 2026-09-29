@@ -65,6 +65,7 @@ export type ReplyOutcome = {
     | 'already_answered'
     | 'loop_guard'
     | 'no_reply_generated'
+    | 'no_conversation_yet'
     | 'needs_human'
     | 'error';
 };
@@ -347,6 +348,27 @@ export class InboundAiService {
     }
 
     const history = await this.loadHistory(contact.id);
+
+    // Only answer people we are genuinely in conversation with.
+    //
+    // An inbound message can arrive from someone this campaign never messaged — a wrong
+    // number, a forwarded contact, or a stranger who found the business number. Letting the
+    // assistant open a conversation with them is both a poor first impression, since nobody
+    // has vetted what it says as an opener, and the riskiest possible traffic: unsolicited
+    // first contact from an automated account is what gets a number reported.
+    //
+    // Requiring at least one outbound message in the thread keeps the assistant to its
+    // actual job — continuing conversations we started, with a prospect who has replied.
+    // Anything else is handed to a human, who can judge it.
+    const hasOutbound = history.some((m) => m.direction === 'outgoing');
+    if (!hasOutbound) {
+      this.logger.log(
+        `No AI reply to contact ${contact.id}: no outbound message in this thread, so the ` +
+          'assistant would be opening a conversation rather than continuing one',
+      );
+      await this.handOverToHuman(campaignContactId);
+      return { queued: false, reason: 'no_conversation_yet' };
+    }
 
     // Loop guard, and the backstop for the per-message key below when Redis is down: if
     // the conversation already ends with our own message, the prospect has not spoken

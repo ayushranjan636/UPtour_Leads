@@ -22,6 +22,15 @@ import { LeadStatus } from '../entities/lead.entity';
 import { DealStage } from '../entities/deal.entity';
 import { AIAnalysisResult } from '../modules/ai/ai.interfaces';
 
+/** The campaign's opening message, which is why the contact is replying at all. */
+const OUR_OUTREACH = {
+  id: 'm-out-1',
+  direction: 'outgoing' as const,
+  is_ai_generated: false,
+  body: 'Hi, we design heritage tours across UP. Interested?',
+  created_at: new Date('2026-01-01T09:00:00Z'),
+};
+
 const HUMAN_INBOUND = {
   id: 'msg-in-1',
   contact_id: 'c1',
@@ -77,7 +86,11 @@ function makeService(
 ) {
   const leads: any[] = over.leads ?? [];
   const deals: any[] = over.deals ?? [];
-  const history: any[] = over.history ?? [HUMAN_INBOUND];
+  // Our opening message, then their reply. A contact who has replied was necessarily
+  // messaged first, so seeding the inbound message alone described a thread that cannot
+  // exist for a campaign contact — and the assistant now declines those, since answering
+  // one means opening a conversation rather than continuing it.
+  const history: any[] = over.history ?? [OUR_OUTREACH, HUMAN_INBOUND];
   let leadSeq = 0;
   let dealSeq = 0;
 
@@ -533,6 +546,32 @@ describe('AI auto-reply guards', () => {
 
     expect(outcome.reason).toBe('human_takeover');
     expect(ctx.sendQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('will not speak first to someone we never messaged', async () => {
+    // An inbound message can come from a wrong number, a forwarded contact, or a stranger
+    // who found the business number. Answering means the assistant opens a conversation
+    // with an unvetted opener — both a poor first impression and the riskiest traffic
+    // there is, since unsolicited automated contact is what gets a number reported.
+    const ctx = makeService({ history: [HUMAN_INBOUND] });
+    const r = await ctx.svc.maybeAutoReply({ ...ctxArgs });
+    expect(r.queued).toBe(false);
+    expect(r.reason).toBe('no_conversation_yet');
+    expect(ctx.sendQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('hands that conversation to a human rather than dropping it', async () => {
+    // Silence would lose a real enquiry; a person can judge what the assistant cannot.
+    const ctx = makeService({ history: [HUMAN_INBOUND] });
+    await ctx.svc.maybeAutoReply({ ...ctxArgs });
+    expect(ctx.ccRepo.update).toHaveBeenCalled();
+  });
+
+  it('replies once our outreach is in the thread', async () => {
+    // The assistant's actual job: continuing a conversation we started.
+    const ctx = makeService({ history: [OUR_OUTREACH, HUMAN_INBOUND] });
+    const r = await ctx.svc.maybeAutoReply({ ...ctxArgs });
+    expect(r.queued).toBe(true);
   });
 
   it('passes recent conversation history to the model', async () => {
