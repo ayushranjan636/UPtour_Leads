@@ -17,7 +17,7 @@ import { WebhookProcessor } from './webhook.processor';
 import { SequenceService } from './sequence.service';
 import { CampaignSchedulerService } from './campaign-scheduler.service';
 import { EngineController } from './engine.controller';
-import { OpenwaModule } from '../openwa/openwa.module';
+import { WhatsappCloudModule } from '../whatsapp-cloud/whatsapp-cloud.module';
 import { AiModule } from '../ai/ai.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
 
@@ -38,7 +38,7 @@ import { WebhooksModule } from '../webhooks/webhooks.module';
       { name: 'ai-analysis' },
       { name: 'webhook-process' },
     ),
-    OpenwaModule,
+    WhatsappCloudModule,
     AiModule,
     WebhooksModule,
   ],

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Row, Col, Card, Table, Typography, Progress, Flex, Spin, Empty, Badge, Button } from 'antd';
 import {
   ContactsOutlined,
@@ -12,8 +13,8 @@ import {
 import StatCard from '../components/StatCard';
 import PageHeader from '../components/PageHeader';
 import WhatsAppConnectModal from '../components/WhatsAppConnectModal';
-import { dashboardAPI, gatewayAPI } from '../services/endpoints';
-import type { WhatsAppConnection } from '../services/endpoints';
+import { dashboardAPI, gatewayAPI, whatsappCloudAPI } from '../services/endpoints';
+import type { WhatsAppConnection, WhatsAppProvider } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
@@ -65,6 +66,8 @@ export default function Dashboard() {
   const [pipeline, setPipeline] = useState<PipelineEntry[]>([]);
   const [connection, setConnection] = useState<WhatsAppConnection | null>(null);
   const [connectOpen, setConnectOpen] = useState(false);
+  const [connectionProvider, setConnectionProvider] = useState<WhatsAppProvider>('session');
+  const navigate = useNavigate();
   /** Bumped to force an out-of-band re-probe, e.g. right after pairing succeeds. */
   const [connectionTick, setConnectionTick] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -98,8 +101,31 @@ export default function Dashboard() {
     let cancelled = false;
     const probe = async () => {
       try {
-        const { data } = await gatewayAPI.connection();
-        if (!cancelled) setConnection(data);
+        // Report whichever transport is actually sending. Falls back to the session
+        // probe on an older API that has no provider endpoint.
+        const provider = await whatsappCloudAPI.provider().then((r) => r.data).catch(() => null);
+        if (provider?.provider === 'cloud') {
+          if (!cancelled) {
+            setConnectionProvider('cloud');
+            setConnection({
+              connected: provider.active.connected,
+              // Meta is always "reachable"; a problem there is credentials, not infra.
+              gatewayReachable: true,
+              status: provider.active.connected ? 'ready' : 'disconnected',
+              phone: provider.active.phone,
+              sessionId: null,
+              sessionName: provider.active.name,
+              awaitingScan: false,
+              message: provider.active.message,
+            });
+          }
+          return;
+        }
+        const data = provider?.session ?? (await gatewayAPI.connection()).data;
+        if (!cancelled) {
+          setConnectionProvider('session');
+          setConnection(data);
+        }
       } catch {
         if (!cancelled) {
           setConnection({
@@ -236,10 +262,11 @@ export default function Dashboard() {
   // Amber for a session problem the operator can fix by scanning; red only when
   // the gateway process itself is unreachable and scanning would not help.
   const problemColor = connection?.gatewayReachable ? color.warning : color.danger;
+  const via = connectionProvider === 'cloud' ? ' (Cloud API)' : '';
   const connectionLabel = connected
     ? connection?.phone
-      ? `WhatsApp connected · ${connection.phone}`
-      : 'WhatsApp connected'
+      ? `WhatsApp connected${via} · ${connection.phone}`
+      : `WhatsApp connected${via}`
     : // Empty/absent messages fall back, so the badge never renders blank.
       (connection?.message?.trim() || 'WhatsApp not connected');
 
@@ -269,7 +296,12 @@ export default function Dashboard() {
               <Button
                 type="primary"
                 icon={<WhatsAppOutlined />}
-                onClick={() => setConnectOpen(true)}
+                // The Cloud API is fixed by editing credentials, not by scanning a QR.
+                onClick={() =>
+                  connectionProvider === 'cloud'
+                    ? navigate('/settings?tab=whatsapp')
+                    : setConnectOpen(true)
+                }
               >
                 Connect WhatsApp
               </Button>

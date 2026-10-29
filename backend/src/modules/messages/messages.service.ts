@@ -12,7 +12,8 @@ import { Repository } from 'typeorm';
 import { Message, MessageDirection, MessageStatus } from '../../entities/message.entity';
 import { Contact } from '../../entities/contact.entity';
 import { AiAnalysis } from '../../entities/ai-analysis.entity';
-import { OpenwaService, toChatId } from '../openwa/openwa.service';
+import { toChatId } from '../openwa/openwa.service';
+import { WhatsappSenderService } from '../whatsapp-cloud/whatsapp-sender.service';
 import { PaginatedResponseDto } from '../../common/dto/paginated-response.dto';
 
 @Injectable()
@@ -26,7 +27,7 @@ export class MessagesService {
     private readonly contactRepository: Repository<Contact>,
     @InjectRepository(AiAnalysis)
     private readonly aiAnalysisRepository: Repository<AiAnalysis>,
-    private readonly openwaService: OpenwaService,
+    private readonly openwaService: WhatsappSenderService,
   ) {}
 
   async getConversation(
