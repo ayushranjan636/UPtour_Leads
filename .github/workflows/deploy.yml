@@ -1,0 +1,121 @@
+# Deploy the portal to the production EC2 instance whenever main changes.
+#
+# Does exactly what deploy/README.md describes by hand: rsync the code to /opt/uptour
+# and rebuild the containers. Production secrets (.env.prod) stay on the server and are
+# never touched, because rsync excludes .env* files.
+#
+# The security group only allows SSH from the office ISP block, which GitHub's runners
+# are not in. So the job opens port 22 to this runner's own IP for the length of the
+# deploy and always closes it again afterwards, even when the deploy fails.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_SSH_KEY         contents of uptour-portal.pem
+#   AWS_ACCESS_KEY_ID      IAM user allowed to edit only the portal's security group
+#   AWS_SECRET_ACCESS_KEY    (policy in deploy/README.md)
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'docker-compose.prod.yml'
+      - 'Caddyfile'
+      - '.github/workflows/deploy.yml'
+  # "Run workflow" button on the Actions tab, for redeploying without a code change.
+  workflow_dispatch:
+
+# Never run two deploys at once; a second push waits for the first to finish.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  HOST: 43.205.132.61
+  SSH_USER: ubuntu
+  AWS_REGION: ap-south-1
+  SECURITY_GROUP: sg-0c09e6085bbea3aea
+  COMPOSE: docker compose -f docker-compose.prod.yml --env-file .env.prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the deploy secrets are set
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          missing=""
+          [ -n "$SSH_KEY" ] || missing="$missing DEPLOY_SSH_KEY"
+          [ -n "$AWS_KEY" ] || missing="$missing AWS_ACCESS_KEY_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing. Add them under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Open SSH to this runner only
+        run: |
+          RUNNER_IP=$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')
+          echo "RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+          aws ec2 authorize-security-group-ingress \
+            --group-id "$SECURITY_GROUP" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$RUNNER_IP/32,Description=github-actions-deploy}]"
+
+      - name: Load the SSH key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          # The rule can take a few seconds to apply; wait for the port before going on.
+          for i in $(seq 1 30); do
+            ssh-keyscan -T 5 "$HOST" >> ~/.ssh/known_hosts 2>/dev/null && break
+            sleep 2
+          done
+          test -s ~/.ssh/known_hosts
+
+      - name: Copy the code to the server
+        run: |
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy.pem" \
+            --exclude node_modules --exclude dist --exclude .git --exclude '.env*' \
+            backend frontend docker-compose.prod.yml Caddyfile \
+            "$SSH_USER@$HOST:/opt/uptour/"
+
+      - name: Rebuild and restart
+        run: |
+          ssh -i ~/.ssh/deploy.pem "$SSH_USER@$HOST" \
+            "cd /opt/uptour && $COMPOSE up -d --build && docker image prune -f"
+
+      - name: Check the API is healthy
+        run: |
+          for i in $(seq 1 30); do
+            if ssh -i ~/.ssh/deploy.pem "$SSH_USER@$HOST" \
+                "cd /opt/uptour && $COMPOSE exec -T backend wget -qO- http://localhost:3000/api/health"; then
+              echo; echo "Deployed and healthy."; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::The API did not report healthy after the deploy."
+          ssh -i ~/.ssh/deploy.pem "$SSH_USER@$HOST" "cd /opt/uptour && $COMPOSE logs --tail 80 backend"
+          exit 1
+
+      - name: Close SSH again
+        if: always() && env.RUNNER_IP != ''
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id "$SECURITY_GROUP" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$RUNNER_IP/32}]" \
+            || echo "::warning::Could not remove the temporary SSH rule for $RUNNER_IP; remove it in the AWS console."
+          rm -f ~/.ssh/deploy.pem

@@ -96,6 +96,29 @@ dc pull && dc up -d      # apply base-image updates
 
 ### Deploying a change
 
+Merging into `main` deploys automatically through `.github/workflows/deploy.yml`, and the
+Actions tab has a "Run workflow" button to redeploy by hand. The job opens SSH to its own
+IP for the length of the deploy and closes it again, because the security group otherwise
+admits only the office ISP block. It needs three repository secrets:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_SSH_KEY` | Full contents of `uptour-portal.pem` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Keys of an IAM user limited to the policy below |
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress"],
+    "Resource": "arn:aws:ec2:ap-south-1:*:security-group/sg-0c09e6085bbea3aea"
+  }]
+}
+```
+
+The manual route still works:
+
 ```bash
 # From a workstation, in the repo root:
 rsync -az --delete -e "ssh -i ~/.ssh/uptour-portal.pem" \
