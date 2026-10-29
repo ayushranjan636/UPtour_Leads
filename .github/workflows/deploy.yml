@@ -15,14 +15,10 @@
 name: Deploy to production
 
 on:
+  # Every push to main deploys, so "merge to redeploy" always works, even for a
+  # commit that touches no app files. A redeploy of unchanged code is harmless.
   push:
     branches: [main]
-    paths:
-      - 'backend/**'
-      - 'frontend/**'
-      - 'docker-compose.prod.yml'
-      - 'Caddyfile'
-      - '.github/workflows/deploy.yml'
   # "Run workflow" button on the Actions tab, for redeploying without a code change.
   workflow_dispatch:
 
