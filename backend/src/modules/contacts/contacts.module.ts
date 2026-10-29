@@ -5,12 +5,12 @@ import { Company } from '../../entities/company.entity';
 import { CampaignContact } from '../../entities/campaign-contact.entity';
 import { ContactsController } from './contacts.controller';
 import { ContactsService } from './contacts.service';
-import { OpenwaModule } from '../openwa/openwa.module';
+import { WhatsappCloudModule } from '../whatsapp-cloud/whatsapp-cloud.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Contact, Company, CampaignContact]),
-    OpenwaModule,
+    WhatsappCloudModule,
   ],
   controllers: [ContactsController],
   providers: [ContactsService],

@@ -123,6 +123,24 @@ It is idempotent — re-running will not reset an existing admin's password.
 > entity change needs the same treatment**: the running production app will not alter its
 > own schema. Adding real migrations is the durable fix.
 
+The WhatsApp Cloud API release is the exception: it patches its own schema on boot with
+idempotent statements, creating an `app_settings` table and three nullable
+`cloud_template_*` columns on `message_templates`. No manual step is needed on deploy.
+
+### WhatsApp Cloud API (official)
+
+The portal can send through Meta's official WhatsApp Cloud API instead of the QR session.
+Connect it in Settings → WhatsApp, then in the Meta app open WhatsApp → Configuration and
+enter the callback URL and verify token shown there:
+
+```
+Callback URL  https://<PORTAL_DOMAIN>/api/webhooks/whatsapp-cloud
+Fields        messages
+```
+
+Caddy already forwards `/api/*`, so nothing else needs opening. Cold first messages must
+use an approved Meta template, chosen per campaign template.
+
 ### Backups
 
 Nothing is scheduled yet. The data worth protecting is the Postgres volume (contacts,

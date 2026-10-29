@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThan, Repository } from 'typeorm';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { CampaignContact } from '../../entities/campaign-contact.entity';
@@ -8,7 +8,8 @@ import { Contact } from '../../entities/contact.entity';
 import { Campaign } from '../../entities/campaign.entity';
 import { Message } from '../../entities/message.entity';
 import { MessageTemplate } from '../../entities/message-template.entity';
-import { OpenwaService, toChatId } from '../openwa/openwa.service';
+import { toChatId } from '../openwa/openwa.service';
+import { WhatsappSenderService, isCloudSessionId } from '../whatsapp-cloud/whatsapp-sender.service';
 import { spin } from '../../common/utils/spintax.util';
 import { FollowupSchedulerService } from './followup-scheduler.service';
 
@@ -64,7 +65,7 @@ export class MessageSendProcessor extends WorkerHost {
     private readonly messageRepo: Repository<Message>,
     @InjectRepository(MessageTemplate)
     private readonly templateRepo: Repository<MessageTemplate>,
-    private readonly openwa: OpenwaService,
+    private readonly openwa: WhatsappSenderService,
     // Injected lazily: FollowupSchedulerService lives in the same module and
     // does not depend back on this processor, so no circular ref.
     private readonly followupScheduler: FollowupSchedulerService,
@@ -152,9 +153,43 @@ export class MessageSendProcessor extends WorkerHost {
       //     in one place.
       const resolvedSessionId = await this.openwa.resolveSessionId(sessionId);
 
-      // 5. Send via OpenWA
+      // 5. Send through the active transport (session gateway or WhatsApp Cloud API)
       let openwaResult: any;
-      if (activeTemplate.type === 'text' || !activeTemplate.media_url) {
+      let sentBody = renderedBody;
+      const viaCloud = isCloudSessionId(resolvedSessionId);
+      if (viaCloud && activeTemplate.cloud_template_name) {
+        // The Cloud API opens conversations only with an approved Meta template. The
+        // portal body is kept as the readable copy; what Meta sends is the template.
+        const params = (activeTemplate.cloud_template_params ?? []).map((p) =>
+          this.renderTemplate(p, contact, campaign),
+        );
+        const headerType = activeTemplate.type as string;
+        const header =
+          activeTemplate.media_url && ['image', 'video', 'document'].includes(headerType)
+            ? {
+                type: headerType as 'image' | 'video' | 'document',
+                link: activeTemplate.media_url,
+                filename: activeTemplate.media_filename || undefined,
+              }
+            : null;
+        openwaResult = await this.openwa.sendTemplate(
+          resolvedSessionId,
+          chatId,
+          activeTemplate.cloud_template_name,
+          activeTemplate.cloud_template_language || 'en',
+          params,
+          header,
+        );
+        sentBody = `[template: ${activeTemplate.cloud_template_name}] ${renderedBody}`.trim();
+      } else if (viaCloud && !(await this.withinCustomerServiceWindow(contactId))) {
+        // Meta refuses free-form messages outside the 24-hour window after the contact's
+        // last message. Failing here names the fix instead of burning a send on an
+        // error code nobody will recognise.
+        throw new Error(
+          `WhatsApp Cloud API needs an approved Meta template to message ${contact.name || contact.whatsapp_number}: ` +
+            `they have not written in the last 24 hours. Set a Meta template on "${activeTemplate.name}".`,
+        );
+      } else if (activeTemplate.type === 'text' || !activeTemplate.media_url) {
         openwaResult = await this.openwa.sendText(resolvedSessionId, chatId, renderedBody);
       } else if (activeTemplate.type === 'image') {
         openwaResult = await this.openwa.sendImage(resolvedSessionId, chatId, activeTemplate.media_url, renderedBody);
@@ -173,7 +208,7 @@ export class MessageSendProcessor extends WorkerHost {
         contact_id: contactId,
         direction: 'outgoing' as any,
         type: activeTemplate.type || 'text',
-        body: renderedBody,
+        body: sentBody,
         media_url: activeTemplate.media_url,
         // OpenWA returns { messageId, timestamp } — see
         // openwa/src/modules/message/dto/send-message.dto.ts:78-84.
@@ -345,6 +380,21 @@ export class MessageSendProcessor extends WorkerHost {
 
     this.logger.log(`AI reply sent to ${contactId} in ${Date.now() - startTime}ms`);
     return { success: true };
+  }
+
+  /**
+   * True when the contact wrote to us in the last 24 hours.
+   *
+   * That is Meta's customer service window: inside it the Cloud API accepts any message,
+   * outside it only an approved template.
+   */
+  private async withinCustomerServiceWindow(contactId: string): Promise<boolean> {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recent = await this.messageRepo.findOne({
+      where: { contact_id: contactId, direction: 'incoming' as any, created_at: MoreThan(since) },
+      select: { id: true },
+    });
+    return !!recent;
   }
 
   /**

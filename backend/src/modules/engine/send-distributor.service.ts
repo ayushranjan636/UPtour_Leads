@@ -11,7 +11,7 @@ import {
   CampaignContactStatus,
 } from '../../entities/campaign-contact.entity';
 import { Contact } from '../../entities/contact.entity';
-import { OpenwaService } from '../openwa/openwa.service';
+import { WhatsappSenderService } from '../whatsapp-cloud/whatsapp-sender.service';
 import { RedisService } from '../../common/redis/redis.service';
 import {
   dayKeyIn,
@@ -181,7 +181,7 @@ export class SendDistributorService {
     private readonly contactRepo: Repository<Contact>,
     @InjectQueue('message-send')
     private readonly sendQueue: Queue,
-    private readonly openwa: OpenwaService,
+    private readonly openwa: WhatsappSenderService,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
   ) {

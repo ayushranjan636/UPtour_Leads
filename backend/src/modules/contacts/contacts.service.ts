@@ -11,7 +11,7 @@ import { UpdateContactDto } from './dto/update-contact.dto';
 import { QueryContactDto } from './dto/query-contact.dto';
 import { PaginatedResponseDto } from '../../common/dto/paginated-response.dto';
 import { normalizePhone } from '../../common/utils/phone.util';
-import { OpenwaService } from '../openwa/openwa.service';
+import { WhatsappSenderService } from '../whatsapp-cloud/whatsapp-sender.service';
 import { RedisService } from '../../common/redis/redis.service';
 
 @Injectable()
@@ -23,7 +23,7 @@ export class ContactsService extends BaseService<Contact> {
     @InjectRepository(Contact) protected readonly repo: Repository<Contact>,
     @InjectRepository(Company) private readonly companyRepo: Repository<Company>,
     @InjectRepository(CampaignContact) private readonly ccRepo: Repository<CampaignContact>,
-    private readonly openwa: OpenwaService,
+    private readonly openwa: WhatsappSenderService,
     private readonly redis: RedisService,
   ) { super(); }
 

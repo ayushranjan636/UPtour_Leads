@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Card,
   Tabs,
@@ -33,6 +34,7 @@ import PageHeader from '../components/PageHeader';
 import WhatsAppConnectModal, {
   whatsAppStatusLabel,
 } from '../components/WhatsAppConnectModal';
+import WhatsAppCloudPanel from '../components/WhatsAppCloudPanel';
 import { useAuth } from '../contexts/AuthContext';
 import { aiAPI, gatewayAPI, isGatewayHealthy } from '../services/endpoints';
 import type { AiAutoReplySetting, WhatsAppConnection } from '../services/endpoints';
@@ -214,7 +216,7 @@ function WhatsAppTab() {
               </div>
               <div>
                 <Text strong style={{ display: 'block' }}>
-                  WhatsApp Session
+                  WhatsApp QR session
                 </Text>
                 <Text
                   style={{ fontSize: font.size.caption, color: color.textSecondary }}
@@ -296,6 +298,8 @@ function WhatsAppTab() {
           </Flex>
         </Flex>
       </Card>
+
+      <WhatsAppCloudPanel />
 
       <WhatsAppConnectModal
         open={connectOpen}
@@ -670,6 +674,7 @@ function SystemTab() {
 }
 
 export default function Settings() {
+  const [searchParams] = useSearchParams();
   const tabItems = [
     { key: 'profile', label: 'Profile', children: <ProfileTab /> },
     { key: 'whatsapp', label: 'WhatsApp', children: <WhatsAppTab /> },
@@ -685,7 +690,15 @@ export default function Settings() {
       />
 
       <Card style={{ borderRadius: radius.xl }}>
-        <Tabs items={tabItems} />
+        <Tabs
+          items={tabItems}
+          // Deep links such as /settings?tab=whatsapp open the right tab.
+          defaultActiveKey={
+            tabItems.some((t) => t.key === searchParams.get('tab'))
+              ? (searchParams.get('tab') as string)
+              : 'profile'
+          }
+        />
       </Card>
     </div>
   );

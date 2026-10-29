@@ -22,6 +22,7 @@ import {
   Divider,
   Switch,
   Tooltip,
+  Tag,
 } from 'antd';
 import {
   PlayCircleOutlined,
@@ -53,6 +54,7 @@ import DatasetFilter, {
   type DatasetFilterValue,
 } from '../components/DatasetFilter';
 import TriggerConditionField from '../components/TriggerConditionField';
+import MetaTemplateFields from '../components/MetaTemplateFields';
 import {
   campaignsAPI,
   templatesAPI,
@@ -144,6 +146,8 @@ interface Template {
   type?: string;
   sequence_order: number;
   trigger_condition?: string;
+  /** Approved Meta template sent instead of the body on the WhatsApp Cloud API. */
+  cloud_template_name?: string | null;
 }
 
 export default function CampaignDetail() {
@@ -797,7 +801,14 @@ export default function CampaignDetail() {
                         size="small"
                         title={
                           <Flex justify="space-between" align="center" gap={space.sm}>
-                            <Text strong>{t.name}</Text>
+                            <Text strong>
+                              {t.name}
+                              {t.cloud_template_name && (
+                                <Tooltip title="Sent as this approved Meta template when the WhatsApp Cloud API is active">
+                                  <Tag color="blue" style={{ marginLeft: 8 }}>Meta: {t.cloud_template_name}</Tag>
+                                </Tooltip>
+                              )}
+                            </Text>
                             <Popconfirm
                               title="Delete this template?"
                               onConfirm={() => handleDeleteTemplate(t.id)}
@@ -1207,6 +1218,7 @@ export default function CampaignDetail() {
           >
             <TriggerConditionField />
           </Form.Item>
+          <MetaTemplateFields form={templateForm} />
         </Form>
       </Modal>
     </div>

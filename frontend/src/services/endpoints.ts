@@ -478,6 +478,79 @@ export const gatewayAPI = {
   portalLink: () => api.get<{ url: string }>('/whatsapp/portal-link'),
 };
 
+/* ── WhatsApp Cloud API (Meta's official route) ───────
+ * Runs alongside the QR-linked session. Exactly one of the two sends at a time;
+ * the operator picks which in Settings → WhatsApp.
+ */
+
+/** `session` = QR-linked gateway, `cloud` = Meta's official WhatsApp Cloud API. */
+export type WhatsAppProvider = 'session' | 'cloud';
+
+/** Cloud API link state. Secrets are never returned, only a hint of the token. */
+export interface WhatsAppCloudState {
+  configured: boolean;
+  connected: boolean;
+  phone: string | null;
+  verifiedName: string | null;
+  /** GREEN / YELLOW / RED from Meta; drops when recipients block or report you. */
+  qualityRating: string | null;
+  phoneNumberId: string | null;
+  wabaId: string | null;
+  apiVersion: string;
+  accessTokenHint: string | null;
+  hasAppSecret: boolean;
+  verifyToken: string | null;
+  /** Callback URL to paste into the Meta app's WhatsApp → Configuration page. */
+  webhookUrl: string;
+  source: 'portal' | 'env' | 'none';
+  message: string;
+}
+
+export interface WhatsAppProviderState {
+  provider: WhatsAppProvider;
+  /** What the active transport reports; drives the dashboard indicator. */
+  active: {
+    provider: WhatsAppProvider;
+    connected: boolean;
+    phone: string | null;
+    name: string | null;
+    message: string;
+  };
+  cloud: WhatsAppCloudState;
+  session: WhatsAppConnection | null;
+}
+
+export interface WhatsAppCloudConfigInput {
+  accessToken?: string;
+  phoneNumberId?: string;
+  wabaId?: string;
+  appSecret?: string;
+  verifyToken?: string;
+  apiVersion?: string;
+}
+
+/** An approved (or pending) template on the WhatsApp Business Account. */
+export interface WhatsAppCloudTemplate {
+  name: string;
+  language: string;
+  status: string;
+  category: string;
+  body: string | null;
+  bodyParamCount: number;
+  headerFormat: string | null;
+}
+
+export const whatsappCloudAPI = {
+  provider: () => api.get<WhatsAppProviderState>('/whatsapp/provider'),
+  setProvider: (provider: WhatsAppProvider) =>
+    api.put<{ provider: WhatsAppProvider }>('/whatsapp/provider', { provider }),
+  state: () => api.get<WhatsAppCloudState>('/whatsapp/cloud'),
+  /** Validates against Meta before saving; blank secret fields keep the stored value. */
+  save: (data: WhatsAppCloudConfigInput) => api.put<WhatsAppCloudState>('/whatsapp/cloud', data),
+  disconnect: () => api.delete<WhatsAppCloudState>('/whatsapp/cloud'),
+  templates: () => api.get<WhatsAppCloudTemplate[]>('/whatsapp/cloud/templates'),
+};
+
 /**
  * True when the messaging gateway is usable for sending.
  *

@@ -37,7 +37,11 @@ export class WebhooksService {
     private readonly inboundAi: InboundAiService,
   ) {}
 
-  async processEvent(payload: any): Promise<void> {
+  /**
+   * @param opts.delayMs hold the job before processing. The Cloud API can report a
+   *   status before the send path has stored the message id it refers to.
+   */
+  async processEvent(payload: any, opts: { delayMs?: number } = {}): Promise<void> {
     const event: string = payload?.event;
     this.logger.log(`Processing webhook event: ${event}`);
 
@@ -85,6 +89,7 @@ export class WebhooksService {
           backoff: { type: 'exponential', delay: 5000 },
           removeOnComplete: true,
           removeOnFail: false,
+          ...(opts.delayMs ? { delay: opts.delayMs } : {}),
         },
       );
     } catch (error) {
@@ -186,8 +191,13 @@ export class WebhooksService {
         }
 
         this.logger.log(`Creating new contact for ${phone}`);
+        // The Cloud API sends the sender's WhatsApp profile name; the gateway does not.
+        const profileName =
+          typeof data.profileName === 'string' && data.profileName.trim()
+            ? data.profileName.trim().slice(0, 200)
+            : null;
         contact = this.contactRepo.create({
-          name: phone,
+          name: profileName ?? phone,
           whatsapp_number: phone,
           whatsapp_chat_id: senderJid,
           whatsapp_verified: true,
@@ -340,7 +350,12 @@ export class WebhooksService {
       }
 
       const { status, timestamp } = this.mapAckToStatus(ackLevel);
-      message.status = status;
+      // Never step backwards. The Cloud API can deliver `read` before `delivered`
+      // (statuses are queued with retries and may reorder), and a late `delivered`
+      // must not turn a read message back into an unread one.
+      if (this.statusPriority(status) > this.statusPriority(message.status)) {
+        message.status = status;
+      }
 
       if (timestamp === 'sent_at' && !message.sent_at) {
         message.sent_at = new Date();

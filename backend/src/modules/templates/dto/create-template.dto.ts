@@ -5,6 +5,9 @@ import {
   IsInt,
   IsEnum,
   IsUUID,
+  IsArray,
+  ArrayMaxSize,
+  MaxLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { MessageTemplateType } from '../../../entities/message-template.entity';
@@ -56,4 +59,31 @@ export class CreateTemplateDto {
   @IsOptional()
   @IsString()
   trigger_condition?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Approved Meta template name, used instead of `body` when the WhatsApp Cloud API is active',
+    example: 'heritage_tour_intro',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  cloud_template_name?: string | null;
+
+  @ApiPropertyOptional({ description: 'Meta template language code', example: 'en' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(15)
+  cloud_template_language?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Values for {{1}}, {{2}}… in order; merge fields like {{contact_name}} are allowed',
+    example: ['{{contact_name}}', '{{company_name}}'],
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  cloud_template_params?: string[] | null;
 }
