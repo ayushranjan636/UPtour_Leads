@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Put, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Put,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { OpenwaService } from '../openwa/openwa.service';
@@ -13,6 +24,13 @@ class SaveCloudConfigDto {
   @IsOptional() @IsString() @MaxLength(200) appSecret?: string;
   @IsOptional() @IsString() @MaxLength(200) verifyToken?: string;
   @IsOptional() @IsString() @MaxLength(10) apiVersion?: string;
+}
+
+class SendTestDto {
+  @IsString() @MaxLength(30) to: string;
+  @IsOptional() @IsString() @MaxLength(512) template?: string;
+  @IsOptional() @IsString() @MaxLength(15) language?: string;
+  @IsOptional() @IsString() @MaxLength(4096) text?: string;
 }
 
 class SetProviderDto {
@@ -99,5 +117,29 @@ export class WhatsappCloudController {
   @ApiOperation({ summary: 'Message templates on the WhatsApp Business Account' })
   listTemplates() {
     return this.cloud.listTemplates();
+  }
+
+  @Post('cloud/test')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Send one test message through the Cloud API',
+    description:
+      'Proves the connection end to end. Sends an approved template when one is named ' +
+      '(needed for a number that has not written in the last 24 hours), otherwise plain text.',
+  })
+  async sendTest(@Body() dto: SendTestDto) {
+    const to = WhatsappCloudService.toRecipient(dto.to);
+    if (to.length < 8 || to.length > 15) {
+      throw new BadRequestException(
+        'Enter the full number with country code, for example 919876543210.',
+      );
+    }
+    if (!dto.template && !dto.text?.trim()) {
+      throw new BadRequestException('Choose a template or type a message.');
+    }
+    const result = dto.template
+      ? await this.cloud.sendTemplate(to, dto.template, dto.language || 'en_US')
+      : await this.cloud.sendText(to, dto.text!.trim());
+    return { messageId: result.messageId, to };
   }
 }

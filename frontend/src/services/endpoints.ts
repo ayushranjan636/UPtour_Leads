@@ -549,7 +549,48 @@ export const whatsappCloudAPI = {
   save: (data: WhatsAppCloudConfigInput) => api.put<WhatsAppCloudState>('/whatsapp/cloud', data),
   disconnect: () => api.delete<WhatsAppCloudState>('/whatsapp/cloud'),
   templates: () => api.get<WhatsAppCloudTemplate[]>('/whatsapp/cloud/templates'),
+  /** Sends one message straight away, to prove the connection end to end. */
+  sendTest: (data: { to: string; template?: string; language?: string; text?: string }) =>
+    api.post<{ messageId: string; to: string }>('/whatsapp/cloud/test', data),
 };
+
+/**
+ * Connection state of whichever transport is actually sending, in the session shape.
+ *
+ * Every screen that asks "can we send right now?" must use this rather than
+ * `gatewayAPI.connection()`, which only knows about the QR session. Asking the session
+ * while the Cloud API is active reported "not connected" and locked the composer even
+ * though messages could be sent.
+ */
+export async function getActiveWhatsAppConnection(): Promise<
+  WhatsAppConnection & { provider: WhatsAppProvider }
+> {
+  const state = await whatsappCloudAPI
+    .provider()
+    .then((r) => r.data)
+    .catch(() => null);
+
+  if (state?.provider === 'cloud') {
+    return {
+      provider: 'cloud',
+      connected: state.active.connected,
+      // Meta is always reachable; a problem there is credentials, not infrastructure.
+      gatewayReachable: true,
+      status: state.active.connected ? 'ready' : 'disconnected',
+      phone: state.active.phone,
+      sessionId: null,
+      sessionName: state.active.name,
+      awaitingScan: false,
+      message: state.active.connected
+        ? state.active.message
+        : `WhatsApp Cloud API: ${state.active.message}`,
+    };
+  }
+
+  // Older API without the provider endpoint, or the QR session is active.
+  const session = state?.session ?? (await gatewayAPI.connection()).data;
+  return { ...session, provider: 'session' };
+}
 
 /**
  * True when the messaging gateway is usable for sending.
