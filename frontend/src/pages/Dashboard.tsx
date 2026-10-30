@@ -13,7 +13,7 @@ import {
 import StatCard from '../components/StatCard';
 import PageHeader from '../components/PageHeader';
 import WhatsAppConnectModal from '../components/WhatsAppConnectModal';
-import { dashboardAPI, getActiveWhatsAppConnection } from '../services/endpoints';
+import { dashboardAPI, gatewayAPI, whatsappCloudAPI } from '../services/endpoints';
 import type { WhatsAppConnection, WhatsAppProvider } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
@@ -101,10 +101,29 @@ export default function Dashboard() {
     let cancelled = false;
     const probe = async () => {
       try {
-        // Report whichever transport is actually sending.
-        const { provider, ...data } = await getActiveWhatsAppConnection();
+        // Report whichever transport is actually sending. Falls back to the session
+        // probe on an older API that has no provider endpoint.
+        const provider = await whatsappCloudAPI.provider().then((r) => r.data).catch(() => null);
+        if (provider?.provider === 'cloud') {
+          if (!cancelled) {
+            setConnectionProvider('cloud');
+            setConnection({
+              connected: provider.active.connected,
+              // Meta is always "reachable"; a problem there is credentials, not infra.
+              gatewayReachable: true,
+              status: provider.active.connected ? 'ready' : 'disconnected',
+              phone: provider.active.phone,
+              sessionId: null,
+              sessionName: provider.active.name,
+              awaitingScan: false,
+              message: provider.active.message,
+            });
+          }
+          return;
+        }
+        const data = provider?.session ?? (await gatewayAPI.connection()).data;
         if (!cancelled) {
-          setConnectionProvider(provider);
+          setConnectionProvider('session');
           setConnection(data);
         }
       } catch {
