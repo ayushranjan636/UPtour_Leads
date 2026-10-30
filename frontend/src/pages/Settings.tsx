@@ -36,8 +36,12 @@ import WhatsAppConnectModal, {
 } from '../components/WhatsAppConnectModal';
 import WhatsAppCloudPanel from '../components/WhatsAppCloudPanel';
 import { useAuth } from '../contexts/AuthContext';
-import { aiAPI, gatewayAPI, isGatewayHealthy } from '../services/endpoints';
-import type { AiAutoReplySetting, WhatsAppConnection } from '../services/endpoints';
+import { aiAPI, gatewayAPI, isGatewayHealthy, whatsappCloudAPI } from '../services/endpoints';
+import type {
+  AiAutoReplySetting,
+  WhatsAppConnection,
+  WhatsAppProvider,
+} from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
@@ -114,6 +118,8 @@ function WhatsAppTab() {
   const [failed, setFailed] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [openingPortal, setOpeningPortal] = useState(false);
+  /** Which transport sends; the QR card says so when it is not the one in use. */
+  const [activeProvider, setActiveProvider] = useState<WhatsAppProvider>('session');
 
   /**
    * Open the gateway dashboard already signed in.
@@ -146,9 +152,16 @@ function WhatsAppTab() {
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const { data } = await gatewayAPI.connection();
+      const [{ data }, provider] = await Promise.all([
+        gatewayAPI.connection(),
+        whatsappCloudAPI
+          .provider()
+          .then((r) => r.data.provider)
+          .catch(() => 'session' as const),
+      ]);
       if (!mounted.current) return;
       setConn(data);
+      setActiveProvider(provider);
       setFailed(false);
     } catch {
       // A failed request must not blank the tab — the buttons below (including the
@@ -248,6 +261,15 @@ function WhatsAppTab() {
             </Flex>
           </Flex>
 
+          {activeProvider === 'cloud' && (
+            <Alert
+              type="info"
+              showIcon
+              title="Not in use"
+              description="Messages are being sent through the official WhatsApp Cloud API below. This QR session does not need to be scanned."
+            />
+          )}
+
           {failed && (
             <Alert
               type="error"
@@ -299,7 +321,7 @@ function WhatsAppTab() {
         </Flex>
       </Card>
 
-      <WhatsAppCloudPanel />
+      <WhatsAppCloudPanel onProviderChanged={() => void load(true)} />
 
       <WhatsAppConnectModal
         open={connectOpen}

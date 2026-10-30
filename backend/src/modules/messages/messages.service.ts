@@ -8,12 +8,12 @@ import {
   HttpException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThan, Repository } from 'typeorm';
 import { Message, MessageDirection, MessageStatus } from '../../entities/message.entity';
 import { Contact } from '../../entities/contact.entity';
 import { AiAnalysis } from '../../entities/ai-analysis.entity';
 import { toChatId } from '../openwa/openwa.service';
-import { WhatsappSenderService } from '../whatsapp-cloud/whatsapp-sender.service';
+import { WhatsappSenderService, isCloudSessionId } from '../whatsapp-cloud/whatsapp-sender.service';
 import { PaginatedResponseDto } from '../../common/dto/paginated-response.dto';
 
 @Injectable()
@@ -126,6 +126,28 @@ export class MessagesService {
     // connected, rather than letting the gateway fail cryptically mid-send.
     const resolvedSessionId = await this.openwaService.resolveSessionId(sessionId);
     await this.openwaService.assertSendable(resolvedSessionId);
+
+    // Meta accepts free text only within 24 hours of the contact's last message.
+    // Outside that window the Cloud API takes the message and then silently drops it,
+    // so the conversation would show a "sent" message that never arrives.
+    if (isCloudSessionId(resolvedSessionId)) {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const recentInbound = await this.messageRepository.findOne({
+        where: {
+          contact_id: contactId,
+          direction: MessageDirection.INCOMING,
+          created_at: MoreThan(since),
+        },
+        select: { id: true },
+      });
+      if (!recentInbound) {
+        throw new BadRequestException(
+          `${contact.name || 'This contact'} has not messaged you in the last 24 hours, so WhatsApp's ` +
+            'official API only allows an approved template. Add them to a campaign that uses a Meta ' +
+            'template, or wait until they write to you.',
+        );
+      }
+    }
 
     const savedMessage = await this.messageRepository.save(
       this.messageRepository.create({
