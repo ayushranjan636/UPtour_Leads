@@ -148,6 +148,8 @@ interface Template {
   trigger_condition?: string;
   /** Approved Meta template sent instead of the body on the WhatsApp Cloud API. */
   cloud_template_name?: string | null;
+  cloud_template_language?: string | null;
+  cloud_template_params?: string[] | null;
 }
 
 export default function CampaignDetail() {
@@ -631,6 +633,35 @@ export default function CampaignDetail() {
     }
   };
 
+  /** The step whose Meta template is being set, or null when the dialog is closed. */
+  const [metaEditing, setMetaEditing] = useState<Template | null>(null);
+  const [metaForm] = Form.useForm();
+  const [savingMeta, setSavingMeta] = useState(false);
+
+  const openMetaEditor = (t: Template) => {
+    setMetaEditing(t);
+  };
+
+  const saveMetaTemplate = async () => {
+    if (!metaEditing) return;
+    const values = metaForm.getFieldsValue();
+    setSavingMeta(true);
+    try {
+      await templatesAPI.update(metaEditing.id, {
+        cloud_template_name: values.cloud_template_name?.trim() || null,
+        cloud_template_language: values.cloud_template_language?.trim() || null,
+        cloud_template_params: values.cloud_template_params ?? [],
+      });
+      message.success('Meta template saved');
+      setMetaEditing(null);
+      fetchCampaign();
+    } catch {
+      message.error('Could not save the Meta template');
+    } finally {
+      setSavingMeta(false);
+    }
+  };
+
   const handleDeleteTemplate = async (templateId: string) => {
     try {
       await templatesAPI.delete(templateId);
@@ -809,6 +840,14 @@ export default function CampaignDetail() {
                                 </Tooltip>
                               )}
                             </Text>
+                            <Flex gap={4} align="center">
+                            <Button
+                              size="small"
+                              type={t.cloud_template_name ? 'text' : 'link'}
+                              onClick={() => openMetaEditor(t)}
+                            >
+                              {t.cloud_template_name ? 'Change Meta template' : 'Set Meta template'}
+                            </Button>
                             <Popconfirm
                               title="Delete this template?"
                               onConfirm={() => handleDeleteTemplate(t.id)}
@@ -824,6 +863,7 @@ export default function CampaignDetail() {
                                 icon={<DeleteOutlined />}
                               />
                             </Popconfirm>
+                            </Flex>
                           </Flex>
                         }
                         style={{ borderRadius: radius.lg, marginBottom: space.md }}
@@ -1219,6 +1259,31 @@ export default function CampaignDetail() {
             <TriggerConditionField />
           </Form.Item>
           <MetaTemplateFields form={templateForm} />
+        </Form>
+      </Modal>
+
+      <Modal
+        title={metaEditing ? `Meta template for "${metaEditing.name}"` : 'Meta template'}
+        open={!!metaEditing}
+        onOk={() => void saveMetaTemplate()}
+        confirmLoading={savingMeta}
+        onCancel={() => setMetaEditing(null)}
+        okText="Save"
+        width={520}
+        destroyOnHidden
+      >
+        <Form
+          form={metaForm}
+          layout="vertical"
+          preserve={false}
+          style={{ marginTop: space.md }}
+          initialValues={{
+            cloud_template_name: metaEditing?.cloud_template_name ?? undefined,
+            cloud_template_language: metaEditing?.cloud_template_language ?? undefined,
+            cloud_template_params: metaEditing?.cloud_template_params ?? [],
+          }}
+        >
+          <MetaTemplateFields form={metaForm} defaultOpen />
         </Form>
       </Modal>
     </div>

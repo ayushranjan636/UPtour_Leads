@@ -24,6 +24,7 @@ import {
 } from '@ant-design/icons';
 import { whatsappCloudAPI } from '../services/endpoints';
 import WhatsAppCloudTestCard from './WhatsAppCloudTestCard';
+import WhatsAppCloudTemplatesCard from './WhatsAppCloudTemplatesCard';
 import type {
   WhatsAppCloudConfigInput,
   WhatsAppProvider,
@@ -135,6 +136,27 @@ export default function WhatsAppCloudPanel({ onProviderChanged }: { onProviderCh
         }
       },
     });
+  };
+
+  const [registering, setRegistering] = useState(false);
+  /**
+   * Only "Receiving" when Meta itself reports this portal's URL. An app-level URL set by
+   * hand in the Meta dashboard cannot be read back, so it shows as not set up; pressing
+   * the button then registers it explicitly, which is harmless.
+   */
+  const webhookLive = !!cloud?.webhook?.subscribed && cloud.webhook.callbackUrl === cloud.webhookUrl;
+
+  const registerWebhook = async () => {
+    setRegistering(true);
+    try {
+      await whatsappCloudAPI.registerWebhook();
+      message.success('Webhook registered with Meta');
+      await load();
+    } catch (err) {
+      message.error(errorText(err, 'Meta did not accept the webhook.'));
+    } finally {
+      if (mounted.current) setRegistering(false);
+    }
   };
 
   const disconnect = async () => {
@@ -377,14 +399,46 @@ export default function WhatsAppCloudPanel({ onProviderChanged }: { onProviderCh
 
       {cloud.connected && <WhatsAppCloudTestCard />}
 
+      {cloud.connected && <WhatsAppCloudTemplatesCard />}
+
       {/* ── Webhook setup ─────────────────────────────────── */}
       <Card size="small" style={{ borderRadius: radius.lg }}>
         <Flex vertical gap={space.md}>
-          <Text strong>Webhook (replies and delivery receipts)</Text>
+          <Flex justify="space-between" align="center" gap={space.md} wrap>
+            <Text strong>Webhook (replies and delivery receipts)</Text>
+            {cloud.connected && (
+              <Badge
+                status={webhookLive ? 'success' : 'warning'}
+                text={webhookLive ? 'Receiving' : 'Not set up'}
+              />
+            )}
+          </Flex>
           <Paragraph style={{ margin: 0, fontSize: font.size.footnote, color: color.textSecondary }}>
-            In your Meta app open WhatsApp → Configuration, paste these two values, press Verify and save,
-            then subscribe to the <Text code>messages</Text> field.
+            {webhookLive
+              ? 'Meta sends replies and delivered/read ticks to this portal.'
+              : 'Press the button and the portal registers itself with Meta. Without this, messages still send but replies and ticks never arrive.'}
           </Paragraph>
+          {cloud.connected && (
+            <Flex>
+              <Button
+                type={webhookLive ? 'default' : 'primary'}
+                loading={registering}
+                onClick={() => void registerWebhook()}
+                disabled={!cloud.hasAppSecret}
+              >
+                {webhookLive ? 'Register again' : 'Set up webhook automatically'}
+              </Button>
+            </Flex>
+          )}
+          {cloud.connected && !cloud.hasAppSecret && (
+            <Text style={{ fontSize: font.size.caption, color: color.warning }}>
+              Add the app secret under Edit credentials first, so the portal can check each webhook is really from Meta.
+            </Text>
+          )}
+          <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+            Manual setup, if you prefer: in your Meta app open WhatsApp → Configuration, enter these two values,
+            then subscribe to the <Text code>messages</Text> field.
+          </Text>
           <Row label="Callback URL" value={<Text copyable>{cloud.webhookUrl}</Text>} />
           <Row
             label="Verify token"

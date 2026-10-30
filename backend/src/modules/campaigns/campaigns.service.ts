@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { BaseService } from '../../common/base/base.service';
@@ -11,6 +11,8 @@ import { PaginatedResponseDto } from '../../common/dto/paginated-response.dto';
 import { ContactsService } from '../contacts/contacts.service';
 import { QueryContactDto } from '../contacts/dto/query-contact.dto';
 import { MessageTemplate } from '../../entities/message-template.entity';
+import { WhatsappCloudService } from '../whatsapp-cloud/whatsapp-cloud.service';
+import { isReplyTriggered, resolveTriggerCondition } from '../engine/trigger-conditions';
 
 /** Shape returned by getSendPreview — the facts behind the "send" decision. */
 export interface SendPreview {
@@ -93,6 +95,8 @@ export class CampaignsService extends BaseService<Campaign> {
     @InjectRepository(Contact) private readonly contactRepo: Repository<Contact>,
     @InjectRepository(MessageTemplate) private readonly templateRepo: Repository<MessageTemplate>,
     private readonly contactsService: ContactsService,
+    // Optional so unit tests that build the service by hand keep working.
+    @Optional() private readonly cloud?: WhatsappCloudService,
   ) { super(); }
 
   async createCampaign(dto: CreateCampaignDto, userId: string): Promise<Campaign> {
@@ -463,8 +467,32 @@ export class CampaignsService extends BaseService<Campaign> {
         ...(sendable.length === 0
           ? ['No sendable contacts — add an audience before activating.']
           : []),
+        ...(await this.cloudTemplateBlockers(templates)),
       ],
     };
+  }
+
+  /**
+   * Steps that would fail on the official WhatsApp Cloud API.
+   *
+   * Meta delivers free text only within 24 hours of the contact's last message. An
+   * opening message, or a "no reply" follow-up, goes to someone who has not written, so
+   * it must be an approved Meta template; without one every send fails. Steps that fire
+   * on a reply are answering a fresh message and may stay free text.
+   */
+  private async cloudTemplateBlockers(templates: MessageTemplate[]): Promise<string[]> {
+    if (!this.cloud || (await this.cloud.getProvider().catch(() => 'session')) !== 'cloud') return [];
+    return templates
+      .filter((t) => !t.cloud_template_name?.trim())
+      .filter((t) => {
+        const condition = resolveTriggerCondition(t.trigger_condition).condition;
+        return !condition || !isReplyTriggered(condition);
+      })
+      .map(
+        (t) =>
+          `"${t.name}" needs an approved Meta template: the official WhatsApp API will not deliver ` +
+          'free text to someone who has not messaged you. Choose one under "WhatsApp Cloud API template".',
+      );
   }
 
   private async transitionTo(id: string, target: CampaignStatus): Promise<Campaign> {

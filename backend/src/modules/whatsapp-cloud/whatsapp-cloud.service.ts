@@ -4,6 +4,7 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  OnApplicationBootstrap,
   OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -59,7 +60,29 @@ export interface CloudState {
   webhookUrl: string;
   /** Where the credentials came from. */
   source: 'portal' | 'env' | 'none';
+  /**
+   * Whether Meta will deliver replies and receipts here. `callbackUrl` is the
+   * account-level override Meta reports; null means the app-level URL applies.
+   */
+  webhook: { subscribed: boolean; callbackUrl: string | null };
   message: string;
+}
+
+/** Input for creating a message template on the WhatsApp Business Account. */
+export interface NewCloudTemplate {
+  /** Lowercase letters, digits and underscores, e.g. heritage_tour_intro. */
+  name: string;
+  /** e.g. en, en_US, hi. */
+  language: string;
+  category: 'MARKETING' | 'UTILITY';
+  /** May contain {{1}}, {{2}}… placeholders. */
+  body: string;
+  /** One sample value per placeholder, which Meta's reviewers read. */
+  examples?: string[];
+  headerText?: string;
+  footer?: string;
+  /** Quick-reply button labels, at most three. */
+  quickReplies?: string[];
 }
 
 export interface CloudTemplate {
@@ -100,7 +123,7 @@ const GRAPH_BASE = 'https://graph.facebook.com';
  * fallback, for deployments that prefer to keep tokens out of the database.
  */
 @Injectable()
-export class WhatsappCloudService implements OnModuleInit {
+export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = new Logger(WhatsappCloudService.name);
 
   /** Short cache so a campaign burst does not read the settings table per message. */
@@ -141,6 +164,26 @@ export class WhatsappCloudService implements OnModuleInit {
       } catch (err) {
         this.logger.error(`Schema patch failed (${sql.split('\n')[0]}): ${(err as Error).message}`);
       }
+    }
+  }
+
+  /**
+   * Make sure Meta's webhooks point here once the app is up.
+   *
+   * Credentials saved before automatic registration existed, or a domain change, would
+   * otherwise leave replies and delivery ticks going nowhere until someone noticed.
+   * Soft-fails: a Meta outage must not stop the portal from starting.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      const cfg = await this.getConfig();
+      const url = this.webhookUrl();
+      if (!cfg?.wabaId || !cfg.verifyToken || !/^https:\/\//.test(url)) return;
+      const status = await this.webhookStatus(cfg);
+      if (status.callbackUrl === url) return;
+      await this.registerWebhookFor(cfg);
+    } catch (err) {
+      this.logger.warn(`Webhook check on startup skipped: ${(err as Error).message}`);
     }
   }
 
@@ -315,16 +358,75 @@ export class WhatsappCloudService implements OnModuleInit {
    * subscription can also be made by hand in the Meta dashboard.
    */
   private async subscribeApp(cfg: CloudConfig): Promise<void> {
-    if (!cfg.wabaId) return;
     try {
-      await axios.post(
-        `${GRAPH_BASE}/${cfg.apiVersion}/${cfg.wabaId}/subscribed_apps`,
-        {},
-        { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 15_000 },
-      );
-      this.logger.log(`Subscribed the app to webhooks for WABA ${cfg.wabaId}`);
+      await this.registerWebhookFor(cfg);
     } catch (err) {
-      this.logger.warn(`Could not subscribe the app to WABA ${cfg.wabaId}: ${this.describeError(err)}`);
+      this.logger.warn(`Could not register the webhook for WABA ${cfg.wabaId}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Point Meta's webhooks for this WhatsApp Business Account at the portal.
+   *
+   * `override_callback_uri` sets the callback for this account alone, using the same
+   * system-user token as sending. That removes the manual "paste the callback URL into
+   * the Meta dashboard" step, which is where most setups silently stall: messages send,
+   * but replies and delivery ticks never arrive. Meta verifies the URL by calling our
+   * GET handler with the verify token before accepting it.
+   */
+  private async registerWebhookFor(cfg: CloudConfig): Promise<{ callbackUrl: string | null }> {
+    if (!cfg.wabaId) {
+      throw new BadRequestException('Add the WhatsApp Business Account ID first.');
+    }
+    const callbackUrl = this.webhookUrl();
+    const publicHttps = /^https:\/\//.test(callbackUrl) && !/localhost|127\.0\.0\.1/.test(callbackUrl);
+    const body: Record<string, string> = {};
+    if (publicHttps && cfg.verifyToken) {
+      body.override_callback_uri = callbackUrl;
+      body.verify_token = cfg.verifyToken;
+    }
+    try {
+      await axios.post(`${GRAPH_BASE}/${cfg.apiVersion}/${cfg.wabaId}/subscribed_apps`, body, {
+        headers: { Authorization: `Bearer ${cfg.accessToken}` },
+        timeout: 20_000,
+      });
+    } catch (err) {
+      throw new BadRequestException(`Meta did not accept the webhook: ${this.describeError(err)}`);
+    }
+    this.logger.log(
+      body.override_callback_uri
+        ? `Webhook for WABA ${cfg.wabaId} now points at ${callbackUrl}`
+        : `Subscribed the app to WABA ${cfg.wabaId} (callback not set: ${callbackUrl} is not public HTTPS)`,
+    );
+    return { callbackUrl: body.override_callback_uri ?? null };
+  }
+
+  /** Register the webhook on demand, for the Settings button. */
+  async registerWebhook(): Promise<CloudState> {
+    const cfg = await this.requireConfig();
+    if (!/^https:\/\//.test(this.webhookUrl())) {
+      throw new BadRequestException(
+        `Meta needs a public HTTPS address, and the callback is ${this.webhookUrl()}. ` +
+          'This works on the deployed portal, or set PUBLIC_API_URL to a public tunnel.',
+      );
+    }
+    await this.registerWebhookFor(cfg);
+    return this.getState();
+  }
+
+  /** Where Meta currently sends this account's webhooks, as Meta reports it. */
+  private async webhookStatus(cfg: CloudConfig): Promise<CloudState['webhook']> {
+    if (!cfg.wabaId) return { subscribed: false, callbackUrl: null };
+    try {
+      const { data } = await axios.get(`${GRAPH_BASE}/${cfg.apiVersion}/${cfg.wabaId}/subscribed_apps`, {
+        headers: { Authorization: `Bearer ${cfg.accessToken}` },
+        timeout: 10_000,
+      });
+      const apps: any[] = data?.data ?? [];
+      const override = apps.map((a) => a?.override_callback_uri).find(Boolean) ?? null;
+      return { subscribed: apps.length > 0, callbackUrl: override };
+    } catch {
+      return { subscribed: false, callbackUrl: null };
     }
   }
 
@@ -353,9 +455,11 @@ export class WhatsappCloudService implements OnModuleInit {
       verifyToken: config?.verifyToken || null,
       webhookUrl: this.webhookUrl(),
       source,
+      webhook: { subscribed: false, callbackUrl: null },
       message: 'WhatsApp Cloud API is not connected.',
     };
     if (!config) return base;
+    base.webhook = await this.webhookStatus(config);
 
     try {
       const { data } = await axios.get(`${GRAPH_BASE}/${config.apiVersion}/${config.phoneNumberId}`, {
@@ -426,6 +530,78 @@ export class WhatsappCloudService implements OnModuleInit {
         `Could not list WhatsApp templates: ${this.describeError(err)}`,
         HttpStatus.BAD_GATEWAY,
       );
+    }
+  }
+
+  /**
+   * Submit a new template to Meta for approval.
+   *
+   * Meta reviews it (usually minutes, sometimes a day). It can be chosen on campaign
+   * steps straight away but only sends once its status is APPROVED.
+   */
+  async createTemplate(input: NewCloudTemplate): Promise<{ id: string; status: string; name: string }> {
+    const cfg = await this.requireConfig();
+    if (!cfg.wabaId) {
+      throw new BadRequestException('Add the WhatsApp Business Account ID in Settings → WhatsApp first.');
+    }
+    const name = input.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!name) throw new BadRequestException('Give the template a name, e.g. heritage_tour_intro.');
+    const body = input.body?.trim();
+    if (!body) throw new BadRequestException('The message text is required.');
+
+    // Meta numbers placeholders {{1}}, {{2}}… and rejects gaps or a body that is only
+    // variables. Checking here gives the operator the reason in plain words.
+    const used = [...new Set((body.match(/\{\{\s*(\d+)\s*\}\}/g) ?? []).map((m) => Number(m.replace(/\D/g, ''))))].sort(
+      (a, b) => a - b,
+    );
+    if (used.some((n, i) => n !== i + 1)) {
+      throw new BadRequestException('Number the blanks in order: {{1}}, then {{2}}, and so on.');
+    }
+    const examples = (input.examples ?? []).map((e) => e?.trim()).filter(Boolean);
+    if (examples.length < used.length) {
+      throw new BadRequestException(
+        `Give a sample value for each blank (${used.length} needed). Meta's reviewers read them.`,
+      );
+    }
+
+    const components: any[] = [];
+    if (input.headerText?.trim()) components.push({ type: 'HEADER', format: 'TEXT', text: input.headerText.trim() });
+    components.push({
+      type: 'BODY',
+      text: body,
+      ...(used.length ? { example: { body_text: [examples.slice(0, used.length)] } } : {}),
+    });
+    if (input.footer?.trim()) components.push({ type: 'FOOTER', text: input.footer.trim() });
+    const replies = (input.quickReplies ?? []).map((r) => r?.trim()).filter(Boolean).slice(0, 3);
+    if (replies.length) {
+      components.push({ type: 'BUTTONS', buttons: replies.map((text) => ({ type: 'QUICK_REPLY', text })) });
+    }
+
+    try {
+      const { data } = await axios.post(
+        `${GRAPH_BASE}/${cfg.apiVersion}/${cfg.wabaId}/message_templates`,
+        { name, language: input.language || 'en', category: input.category || 'MARKETING', components },
+        { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 20_000 },
+      );
+      this.logger.log(`Submitted template ${name} for approval (${data?.status})`);
+      return { id: data?.id, status: data?.status ?? 'PENDING', name };
+    } catch (err) {
+      throw new BadRequestException(`Meta rejected the template: ${this.describeError(err)}`);
+    }
+  }
+
+  async deleteTemplate(name: string): Promise<{ deleted: boolean }> {
+    const cfg = await this.requireConfig();
+    if (!cfg.wabaId) throw new BadRequestException('Add the WhatsApp Business Account ID first.');
+    try {
+      await axios.delete(`${GRAPH_BASE}/${cfg.apiVersion}/${cfg.wabaId}/message_templates`, {
+        params: { name },
+        headers: { Authorization: `Bearer ${cfg.accessToken}` },
+        timeout: 15_000,
+      });
+      return { deleted: true };
+    } catch (err) {
+      throw new BadRequestException(`Meta did not delete the template: ${this.describeError(err)}`);
     }
   }
 

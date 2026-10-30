@@ -246,3 +246,118 @@ describe('Manual messages from Conversations through the Cloud API', () => {
     expect(post).not.toHaveBeenCalled();
   });
 });
+
+describe('Templates, webhook and campaign checks on the Cloud API', () => {
+  function cloudWith(env: Record<string, string> = {}) {
+    const settings: Record<string, unknown> = {
+      'whatsapp.provider': 'cloud',
+      'whatsapp.cloud': {
+        accessToken: 'EAAtest',
+        phoneNumberId: PNID,
+        wabaId: '2296119621207013',
+        appSecret: 'secret',
+        verifyToken: 'verify-123',
+        apiVersion: 'v23.0',
+      },
+    };
+    const dataSource = {
+      query: vi.fn(async (_sql: string, params?: unknown[]) => {
+        const key = params?.[0] as string;
+        return key in settings ? [{ value: settings[key] }] : [];
+      }),
+    };
+    const svc = new WhatsappCloudService({ get: (k: string) => env[k] } as any, dataSource as any);
+    (svc as any).logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    return svc;
+  }
+
+  it('submits a template to Meta with numbered blanks and sample values', async () => {
+    post.mockResolvedValueOnce({ data: { id: 'tpl-1', status: 'PENDING' } } as any);
+    const res = await cloudWith().createTemplate({
+      name: 'Heritage Tour Intro',
+      language: 'en',
+      category: 'MARKETING',
+      body: 'Namaste {{1}}! Tours for guests of {{2}}?',
+      examples: ['Asha', 'Hill Palace'],
+      footer: 'Reply STOP to opt out',
+      quickReplies: ['Yes, send details'],
+    });
+    expect(res).toEqual({ id: 'tpl-1', status: 'PENDING', name: 'heritage_tour_intro' });
+    const [url, body] = post.mock.calls[0] as any[];
+    expect(url).toBe('https://graph.facebook.com/v23.0/2296119621207013/message_templates');
+    expect(body).toEqual({
+      name: 'heritage_tour_intro',
+      language: 'en',
+      category: 'MARKETING',
+      components: [
+        {
+          type: 'BODY',
+          text: 'Namaste {{1}}! Tours for guests of {{2}}?',
+          example: { body_text: [['Asha', 'Hill Palace']] },
+        },
+        { type: 'FOOTER', text: 'Reply STOP to opt out' },
+        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Yes, send details' }] },
+      ],
+    });
+  });
+
+  it('explains a missing sample value instead of letting Meta reject it', async () => {
+    await expect(
+      cloudWith().createTemplate({ name: 'x', language: 'en', category: 'MARKETING', body: 'Hi {{1}}', examples: [] }),
+    ).rejects.toThrow(/sample value for each blank/);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('registers the portal as the webhook for the business account', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValue({ data: { data: [] } } as any);
+    post.mockResolvedValueOnce({ data: { success: true } } as any);
+    await cloudWith({ FRONTEND_URL: 'https://portal.foundros.space' }).registerWebhook();
+    const [url, body] = post.mock.calls[0] as any[];
+    expect(url).toBe('https://graph.facebook.com/v23.0/2296119621207013/subscribed_apps');
+    expect(body).toEqual({
+      override_callback_uri: 'https://portal.foundros.space/api/webhooks/whatsapp-cloud',
+      verify_token: 'verify-123',
+    });
+  });
+
+  it('refuses to register a localhost webhook, which Meta can never reach', async () => {
+    await expect(cloudWith({ APP_URL: 'http://localhost:3000' }).registerWebhook()).rejects.toThrow(
+      /public HTTPS/,
+    );
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('blocks launching a campaign whose opening or no-reply steps have no Meta template', async () => {
+    const { CampaignsService } = await import('../modules/campaigns/campaigns.service');
+    const svc = new CampaignsService({} as any, {} as any, {} as any, {} as any, {} as any, cloudWith());
+    const blockers: string[] = await (svc as any).cloudTemplateBlockers([
+      { name: 'Opening', trigger_condition: 'initial', cloud_template_name: null },
+      { name: 'Nudge', trigger_condition: 'no_reply_48h', cloud_template_name: '' },
+      { name: 'Answer', trigger_condition: 'replied_interested', cloud_template_name: null },
+      { name: 'Ready', trigger_condition: 'initial', cloud_template_name: 'heritage_intro' },
+    ]);
+    expect(blockers).toHaveLength(2);
+    expect(blockers[0]).toMatch(/"Opening" needs an approved Meta template/);
+    expect(blockers[1]).toMatch(/"Nudge"/);
+  });
+
+  it('sends a template from Conversations to someone outside the 24-hour window', async () => {
+    const { sender } = makeCloud();
+    const messageRepository = { create: (d: any) => d, save: vi.fn(async (d: any) => d), findOne: vi.fn() };
+    const svc = new MessagesService(
+      messageRepository as any,
+      { findOne: vi.fn(async () => contact) } as any,
+      {} as any,
+      sender,
+    );
+    (svc as any).logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const saved = await svc.sendTemplateManual('contact-1', 'heritage_intro', 'en', ['Asha'], 'user-1', 'Namaste Asha!');
+    expect(post.mock.calls[0][1]).toMatchObject({
+      type: 'template',
+      template: { name: 'heritage_intro', language: { code: 'en' } },
+    });
+    expect(saved).toMatchObject({ status: 'sent', body: 'Namaste Asha!', openwa_message_id: 'wamid.TEST' });
+    // No 24-hour check: templates are exactly what Meta allows outside the window.
+    expect(messageRepository.findOne).not.toHaveBeenCalled();
+  });
+});
