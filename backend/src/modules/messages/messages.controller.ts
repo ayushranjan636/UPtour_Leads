@@ -16,7 +16,15 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { MessagesService } from './messages.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -37,6 +45,14 @@ class SendMessageDto {
   @IsOptional()
   @IsString()
   sessionId?: string;
+}
+
+class SendTemplateDto {
+  @IsUUID() contactId: string;
+  @IsString() @IsNotEmpty() @MaxLength(512) template: string;
+  @IsString() @IsNotEmpty() @MaxLength(15) language: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) params?: string[];
+  @IsOptional() @IsString() @MaxLength(4096) previewBody?: string;
 }
 
 @ApiTags('Messages')
@@ -74,5 +90,24 @@ export class MessagesController {
     @CurrentUser('userId') userId: string,
   ) {
     return this.messagesService.sendManual(dto.contactId, dto.body, userId, dto.sessionId);
+  }
+
+  @Post('send-template')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Send an approved Meta template to a contact',
+    description:
+      'For the official WhatsApp Cloud API, where a contact who has not written in 24 hours ' +
+      'can only receive an approved template.',
+  })
+  async sendTemplate(@Body() dto: SendTemplateDto, @CurrentUser('userId') userId: string) {
+    return this.messagesService.sendTemplateManual(
+      dto.contactId,
+      dto.template,
+      dto.language,
+      dto.params ?? [],
+      userId,
+      dto.previewBody,
+    );
   }
 }

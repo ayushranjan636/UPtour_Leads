@@ -21,7 +21,9 @@ import {
   RobotOutlined,
   MessageOutlined,
   PaperClipOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
+import SendTemplateModal from '../components/SendTemplateModal';
 import PageHeader from '../components/PageHeader';
 import DatasetFilter, {
   EMPTY_DATASET_FILTER,
@@ -162,7 +164,10 @@ export default function Conversations() {
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
   /** null until the first probe resolves, so nothing is claimed before it is known. */
-  const [connection, setConnection] = useState<WhatsAppConnection | null>(null);
+  const [connection, setConnection] = useState<
+    (WhatsAppConnection & { provider?: 'session' | 'cloud' }) | null
+  >(null);
+  const [templateOpen, setTemplateOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   /*
@@ -709,6 +714,18 @@ export default function Conversations() {
                   />
                 )}
                 <Flex gap={space.sm} align="center">
+                  {connection?.provider === 'cloud' && (
+                    <Tooltip title="Send an approved template. Needed when they have not written in the last 24 hours.">
+                      <Button
+                        icon={<FileTextOutlined />}
+                        onClick={() => setTemplateOpen(true)}
+                        disabled={gatewayDown}
+                        style={{ borderRadius: radius.pill }}
+                      >
+                        Template
+                      </Button>
+                    </Tooltip>
+                  )}
                   <Input
                     placeholder={
                       gatewayDown ? 'Connect WhatsApp to send messages' : 'Type a message...'
@@ -747,6 +764,12 @@ export default function Conversations() {
           )}
         </div>
       </div>
+      <SendTemplateModal
+        open={templateOpen}
+        contact={selectedContact}
+        onClose={() => setTemplateOpen(false)}
+        onSent={() => selectedContact && fetchMessages(selectedContact.id, { quiet: true })}
+      />
     </div>
   );
 }

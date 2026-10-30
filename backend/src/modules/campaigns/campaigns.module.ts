@@ -7,6 +7,7 @@ import { MessageTemplate } from '../../entities/message-template.entity';
 import { CampaignsController } from './campaigns.controller';
 import { CampaignsService } from './campaigns.service';
 import { ContactsModule } from '../contacts/contacts.module';
+import { WhatsappCloudModule } from '../whatsapp-cloud/whatsapp-cloud.module';
 
 @Module({
   imports: [
@@ -14,6 +15,8 @@ import { ContactsModule } from '../contacts/contacts.module';
     // Audience-by-filter reuses the contacts filter logic so a previewed count and
     // the enrolled set can never diverge.
     ContactsModule,
+    // Activation checks that each opening step has an approved Meta template.
+    WhatsappCloudModule,
   ],
   controllers: [CampaignsController],
   providers: [CampaignsService],

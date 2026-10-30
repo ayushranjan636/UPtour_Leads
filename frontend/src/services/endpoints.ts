@@ -206,6 +206,14 @@ export const messagesAPI = {
     api.get(`/messages/conversation/${contactId}`, { params }),
   send: (data: { contactId: string; body: string }) =>
     api.post('/messages/send', data),
+  /** Approved Meta template, for contacts outside the 24-hour window on the Cloud API. */
+  sendTemplate: (data: {
+    contactId: string;
+    template: string;
+    language: string;
+    params: string[];
+    previewBody?: string;
+  }) => api.post('/messages/send-template', data),
 };
 
 /* ── Collection ───────────────────────────────────── */
@@ -503,6 +511,8 @@ export interface WhatsAppCloudState {
   /** Callback URL to paste into the Meta app's WhatsApp → Configuration page. */
   webhookUrl: string;
   source: 'portal' | 'env' | 'none';
+  /** Whether Meta delivers replies and receipts here; callbackUrl is Meta's own record. */
+  webhook: { subscribed: boolean; callbackUrl: string | null };
   message: string;
 }
 
@@ -540,6 +550,18 @@ export interface WhatsAppCloudTemplate {
   headerFormat: string | null;
 }
 
+/** A new template to submit to Meta. Blanks are {{1}}, {{2}}… in the body. */
+export interface NewWhatsAppCloudTemplate {
+  name: string;
+  language: string;
+  category: 'MARKETING' | 'UTILITY';
+  body: string;
+  examples?: string[];
+  headerText?: string;
+  footer?: string;
+  quickReplies?: string[];
+}
+
 export const whatsappCloudAPI = {
   provider: () => api.get<WhatsAppProviderState>('/whatsapp/provider'),
   setProvider: (provider: WhatsAppProvider) =>
@@ -550,6 +572,13 @@ export const whatsappCloudAPI = {
   disconnect: () => api.delete<WhatsAppCloudState>('/whatsapp/cloud'),
   templates: () => api.get<WhatsAppCloudTemplate[]>('/whatsapp/cloud/templates'),
   /** Sends one message straight away, to prove the connection end to end. */
+  /** Submits a template to Meta for approval. */
+  createTemplate: (data: NewWhatsAppCloudTemplate) =>
+    api.post<{ id: string; status: string; name: string }>('/whatsapp/cloud/templates', data),
+  deleteTemplate: (name: string) =>
+    api.delete<{ deleted: boolean }>(`/whatsapp/cloud/templates/${encodeURIComponent(name)}`),
+  /** Points Meta's webhooks for the account at this portal. */
+  registerWebhook: () => api.post<WhatsAppCloudState>('/whatsapp/cloud/webhook'),
   sendTest: (data: { to: string; template?: string; language?: string; text?: string }) =>
     api.post<{ messageId: string; to: string }>('/whatsapp/cloud/test', data),
 };

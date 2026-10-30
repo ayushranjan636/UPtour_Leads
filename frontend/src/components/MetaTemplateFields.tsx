@@ -26,7 +26,14 @@ const MERGE_FIELDS = [
  * Lists the account's approved templates when the Cloud API is connected, and falls back
  * to typing the name when it is not.
  */
-export default function MetaTemplateFields({ form }: { form: FormInstance }) {
+export default function MetaTemplateFields({
+  form,
+  defaultOpen = false,
+}: {
+  form: FormInstance;
+  /** Start expanded, for the dialog whose only purpose is choosing the template. */
+  defaultOpen?: boolean;
+}) {
   const [templates, setTemplates] = useState<WhatsAppCloudTemplate[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,6 +86,7 @@ export default function MetaTemplateFields({ form }: { form: FormInstance }) {
     <Collapse
       size="small"
       ghost
+      defaultActiveKey={defaultOpen ? ['meta'] : undefined}
       items={[
         {
           key: 'meta',

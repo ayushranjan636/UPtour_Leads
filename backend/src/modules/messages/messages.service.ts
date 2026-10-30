@@ -143,8 +143,7 @@ export class MessagesService {
       if (!recentInbound) {
         throw new BadRequestException(
           `${contact.name || 'This contact'} has not messaged you in the last 24 hours, so WhatsApp's ` +
-            'official API only allows an approved template. Add them to a campaign that uses a Meta ' +
-            'template, or wait until they write to you.',
+            'official API only allows an approved template. Use "Send template" instead.',
         );
       }
     }
@@ -191,6 +190,67 @@ export class MessagesService {
       // there was no way to tell a delivered message from a dead gateway.
       if (sendError instanceof HttpException) throw sendError;
       throw new ServiceUnavailableException(`WhatsApp message could not be sent: ${reason}`);
+    }
+  }
+
+  /**
+   * Send an approved Meta template to one contact from the Conversations page.
+   *
+   * The only way to message someone through the official API when they have not
+   * written in the last 24 hours. `previewBody` is the filled-in text the operator saw,
+   * stored so the conversation shows what was actually said.
+   */
+  async sendTemplateManual(
+    contactId: string,
+    template: string,
+    language: string,
+    params: string[],
+    userId: string,
+    previewBody?: string,
+  ): Promise<Message> {
+    const contact = await this.contactRepository.findOne({ where: { id: contactId } });
+    if (!contact) throw new NotFoundException(`Contact with ID "${contactId}" not found`);
+    if (contact.is_opted_out) {
+      throw new BadRequestException(`${contact.name} has opted out of messages and cannot be contacted.`);
+    }
+    if (contact.is_suppressed) {
+      throw new BadRequestException(`${contact.name} is suppressed and cannot be contacted.`);
+    }
+
+    const sessionId = await this.openwaService.resolveSessionId(null);
+    if (!isCloudSessionId(sessionId)) {
+      throw new BadRequestException(
+        'Templates are sent through the official WhatsApp Cloud API. Switch to it in Settings → WhatsApp.',
+      );
+    }
+
+    const chatId = toChatId(contact.whatsapp_number, contact.whatsapp_chat_id);
+    const body = previewBody?.trim() || `[template: ${template}] ${params.join(' · ')}`.trim();
+    const saved = await this.messageRepository.save(
+      this.messageRepository.create({
+        contact_id: contactId,
+        direction: MessageDirection.OUTGOING,
+        type: 'text',
+        body,
+        openwa_session_id: sessionId,
+        status: MessageStatus.QUEUED,
+      }),
+    );
+
+    try {
+      const result = await this.openwaService.sendTemplate(sessionId, chatId, template, language, params);
+      saved.openwa_message_id = result?.messageId ?? null;
+      saved.status = MessageStatus.SENT;
+      saved.sent_at = new Date();
+      await this.messageRepository.save(saved);
+      this.logger.log(`Template ${template} sent to contact ${contactId} by user ${userId}`);
+      return saved;
+    } catch (err) {
+      saved.status = MessageStatus.FAILED;
+      saved.failed_reason = (err as Error).message;
+      await this.messageRepository.save(saved);
+      if (err instanceof HttpException) throw err;
+      throw new ServiceUnavailableException(`Template could not be sent: ${(err as Error).message}`);
     }
   }
 }

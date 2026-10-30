@@ -6,12 +6,13 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
   Put,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { OpenwaService } from '../openwa/openwa.service';
 import { WhatsappCloudService, WhatsAppProvider } from './whatsapp-cloud.service';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -24,6 +25,17 @@ class SaveCloudConfigDto {
   @IsOptional() @IsString() @MaxLength(200) appSecret?: string;
   @IsOptional() @IsString() @MaxLength(200) verifyToken?: string;
   @IsOptional() @IsString() @MaxLength(10) apiVersion?: string;
+}
+
+class CreateCloudTemplateDto {
+  @IsString() @MaxLength(512) name: string;
+  @IsString() @MaxLength(15) language: string;
+  @IsIn(['MARKETING', 'UTILITY']) category: 'MARKETING' | 'UTILITY';
+  @IsString() @MaxLength(1024) body: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) examples?: string[];
+  @IsOptional() @IsString() @MaxLength(60) headerText?: string;
+  @IsOptional() @IsString() @MaxLength(60) footer?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(3) @IsString({ each: true }) quickReplies?: string[];
 }
 
 class SendTestDto {
@@ -117,6 +129,35 @@ export class WhatsappCloudController {
   @ApiOperation({ summary: 'Message templates on the WhatsApp Business Account' })
   listTemplates() {
     return this.cloud.listTemplates();
+  }
+
+  @Post('cloud/templates')
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Submit a new message template to Meta for approval',
+    description: 'Approval usually takes minutes. The template sends once its status is APPROVED.',
+  })
+  createTemplate(@Body() dto: CreateCloudTemplateDto) {
+    return this.cloud.createTemplate(dto);
+  }
+
+  @Delete('cloud/templates/:name')
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete a message template (every language) from the account' })
+  deleteTemplate(@Param('name') name: string) {
+    return this.cloud.deleteTemplate(name);
+  }
+
+  @Post('cloud/webhook')
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Point Meta webhooks at this portal',
+    description: 'Registers the callback URL and verify token on the WhatsApp Business Account.',
+  })
+  registerWebhook() {
+    return this.cloud.registerWebhook();
   }
 
   @Post('cloud/test')
