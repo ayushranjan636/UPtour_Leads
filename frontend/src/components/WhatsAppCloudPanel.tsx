@@ -23,6 +23,7 @@ import {
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { whatsappCloudAPI } from '../services/endpoints';
+import WhatsAppCloudTestCard from './WhatsAppCloudTestCard';
 import type {
   WhatsAppCloudConfigInput,
   WhatsAppProvider,
@@ -373,6 +374,8 @@ export default function WhatsAppCloudPanel({ onProviderChanged }: { onProviderCh
           </Flex>
         </Flex>
       </Card>
+
+      {cloud.connected && <WhatsAppCloudTestCard />}
 
       {/* ── Webhook setup ─────────────────────────────────── */}
       <Card size="small" style={{ borderRadius: radius.lg }}>

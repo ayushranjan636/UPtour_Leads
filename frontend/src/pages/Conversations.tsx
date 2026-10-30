@@ -30,7 +30,7 @@ import DatasetFilter, {
 } from '../components/DatasetFilter';
 import {
   contactsAPI,
-  gatewayAPI,
+  getActiveWhatsAppConnection,
   messagesAPI,
   type WhatsAppConnection,
 } from '../services/endpoints';
@@ -180,7 +180,8 @@ export default function Conversations() {
     let cancelled = false;
     const probe = async () => {
       try {
-        const { data } = await gatewayAPI.connection();
+        // Ask about the transport that actually sends (QR session or Cloud API).
+        const data = await getActiveWhatsAppConnection();
         if (!cancelled) setConnection(data);
       } catch {
         // The endpoint reports an unreachable gateway in its payload rather than
