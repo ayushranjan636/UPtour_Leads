@@ -174,6 +174,9 @@ export const campaignsAPI = {
   getStats: (id: string) => api.get(`/campaigns/${id}/stats`),
   /** Failed contacts grouped by reason, each with a suggested fix where one is known. */
   failures: (id: string) => api.get<CampaignFailureSummary>(`/campaigns/${id}/failures`),
+  /** Submit a step's message to Meta as a new template and link the step to it. */
+  createStepMetaTemplate: (templateId: string) =>
+    api.post(`/campaigns/steps/${templateId}/meta-template`, { category: 'MARKETING' }),
   /** Queue failed contacts again after fixing the cause. */
   retryFailed: (id: string) =>
     api.post<{ requeued: number; status: string }>(`/campaigns/${id}/retry-failed`),
@@ -322,7 +325,31 @@ export interface DistributionPlan {
   notes: string[];
 }
 
+/** Why a campaign is or is not sending right now (GET engine/campaigns/:id/send-status). */
+export interface CampaignSendStatus {
+  state: 'sending' | 'waiting' | 'idle' | 'stopped' | 'problem';
+  headline: string;
+  detail: string;
+  todaySent: number;
+  dailyLimit: number;
+  newToday: number;
+  newLimit: number;
+  pending: number;
+  total: number;
+  failed: number;
+  window: { start: string; end: string; timezone: string; open: boolean };
+  nextSendAt: string | null;
+}
+
 export const engineAPI = {
+  sendStatus: (campaignId: string) =>
+    api.get<CampaignSendStatus>(`/engine/campaigns/${campaignId}/send-status`),
+  /** Sends the next messages now, ignoring sending hours but never the daily limits. */
+  sendNow: (campaignId: string, count: number) =>
+    api.post<{ queued: number; status: CampaignSendStatus }>(
+      `/engine/campaigns/${campaignId}/send-now`,
+      { count },
+    ),
   // Backend reads snake_case @Query() params — see engine.controller.ts.
   //
   // Prefer `campaign_id`: the server resolves the daily limit, window and pending
@@ -393,7 +420,28 @@ export interface AiAutoReplySetting {
   envDefault: boolean;
 }
 
+/** One AI provider as Settings shows it. The key itself is never sent back. */
+export interface AiProviderState {
+  configured: boolean;
+  source: 'portal' | 'env' | 'none';
+  keyHint: string | null;
+  model: string;
+}
+
+export interface AiProvidersState {
+  openai: AiProviderState;
+  gemini: AiProviderState;
+  /** Providers in use, in the order they are tried. */
+  active: string[];
+}
+
 export const aiAPI = {
+  providers: () => api.get<AiProvidersState>('/ai/providers'),
+  /** Blank fields keep the saved value; "-" removes it. Takes effect immediately. */
+  saveProviders: (data: { openaiKey?: string; openaiModel?: string; geminiKey?: string; geminiModel?: string }) =>
+    api.put<AiProvidersState>('/ai/providers', data),
+  testProvider: (provider: 'openai' | 'gemini') =>
+    api.post<{ ok: true; reply: string; ms: number }>('/ai/providers/test', { provider }),
   /** Effective auto-reply state plus its provenance. */
   getAutoReply: () => api.get<AiAutoReplySetting>('/ai/auto-reply'),
   /**

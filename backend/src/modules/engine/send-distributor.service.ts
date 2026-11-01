@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -155,6 +155,22 @@ export interface DistributionPlan {
   notes: string[];
 }
 
+/** What the campaign page shows about sending right now. */
+export interface SendStatus {
+  state: 'sending' | 'waiting' | 'idle' | 'stopped' | 'problem';
+  headline: string;
+  detail: string;
+  todaySent: number;
+  dailyLimit: number;
+  newToday: number;
+  newLimit: number;
+  pending: number;
+  total: number;
+  failed: number;
+  window: { start: string; end: string; timezone: string; open: boolean };
+  nextSendAt: string | null;
+}
+
 @Injectable()
 export class SendDistributorService {
   private readonly logger = new Logger(SendDistributorService.name);
@@ -262,17 +278,24 @@ export class SendDistributorService {
     }
   }
 
-  private async distributeCampaign(campaign: Campaign) {
+  /**
+   * Queue what is due for one campaign.
+   *
+   * `manual` is the operator's "Send now": it skips the send window and the random gap,
+   * which are about pacing, but never the daily limits or opt-outs, which protect the
+   * number. Returns how many messages were queued.
+   */
+  private async distributeCampaign(campaign: Campaign, manual?: number): Promise<number> {
     // 0. Circuit breaker: stop pushing into a session that is failing every send.
-    if (await this.tripBreakerIfFailing(campaign)) return;
+    if (await this.tripBreakerIfFailing(campaign)) return 0;
 
     // 1. Check send window
-    if (!this.isWithinSendWindow(campaign)) return;
+    if (!manual && !this.isWithinSendWindow(campaign)) return 0;
 
     // 2. Check daily limit (Redis-based, survives restarts)
     const todaySent = await this.getTodaySent(campaign);
     const dailyLimit = campaign.daily_send_limit || 100;
-    if (todaySent >= dailyLimit) return;
+    if (todaySent >= dailyLimit) return 0;
 
     // 2b. Cap cold first contacts separately from the overall daily limit.
     //
@@ -299,11 +322,13 @@ export class SendDistributorService {
     // is precisely what the humanised delays exist to avoid. Holding the gap in Redis
     // makes it apply *across* ticks, so spacing is irregular however small the batch.
     const gateMs = await this.getNextSendGate(campaign);
-    if (gateMs !== null && Date.now() < gateMs) return;
+    if (!manual && gateMs !== null && Date.now() < gateMs) return 0;
 
     // 4. Calculate batch size for this cycle
-    const batchSize = this.calculateBatchSize(campaign, todaySent);
-    if (batchSize <= 0) return;
+    const batchSize = manual
+      ? Math.min(manual, dailyLimit - todaySent)
+      : this.calculateBatchSize(campaign, todaySent);
+    if (batchSize <= 0) return 0;
 
     // 4. Pick pending contacts
     const query = this.ccRepo
@@ -327,7 +352,7 @@ export class SendDistributorService {
       .limit(batchSize)
       .getMany();
 
-    if (pendingContacts.length === 0) return;
+    if (pendingContacts.length === 0) return 0;
 
     // 5. Verify and queue with humanised, non-uniform delays
     const delayPerMessage = this.calculateDelay(campaign, dailyLimit);
@@ -440,9 +465,135 @@ export class SendDistributorService {
 
       this.logger.log(
         `Campaign ${campaign.name}: queued ${queuedCount} messages ` +
-        `(${todaySent + queuedCount}/${dailyLimit} today)`,
+        `(${todaySent + queuedCount}/${dailyLimit} today)${manual ? ', sent now by an operator' : ''}`,
       );
     }
+    return queuedCount;
+  }
+
+  /**
+   * "Send now" from the campaign page: queue up to `count` messages immediately.
+   *
+   * Skips the send window and the random gap so an operator can start on demand, but
+   * keeps the daily limit, the new-people limit and every opt-out rule.
+   */
+  async sendNow(campaignId: string, count: number): Promise<{ queued: number; status: SendStatus }> {
+    const campaign = await this.campaignRepo.findOne({ where: { id: campaignId } });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+    if (String(campaign.status) !== 'active') {
+      throw new BadRequestException('Activate the campaign first; only an active campaign can send.');
+    }
+    // Fail with the real reason (e.g. WhatsApp not connected) rather than queueing
+    // messages that are certain to fail.
+    await this.openwa.resolveSessionId(campaign.openwa_session_id);
+    const queued = await this.distributeCampaign(campaign, Math.max(1, Math.min(50, Math.floor(count) || 1)));
+    return { queued, status: await this.getSendStatus(campaignId) };
+  }
+
+  /**
+   * Why a campaign is or is not sending right now, in words an operator can act on.
+   *
+   * Every check in distributeCampaign used to fail silently, so an active campaign
+   * outside its hours, at its daily limit, or with nobody left to message all looked the
+   * same: "0 sent" and no explanation. This mirrors those checks in the same order.
+   */
+  async getSendStatus(campaignId: string): Promise<SendStatus> {
+    const campaign = await this.campaignRepo.findOne({ where: { id: campaignId } });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+
+    const dailyLimit = campaign.daily_send_limit || 100;
+    const newLimit = this.dailyNewContactLimit(campaign);
+    const [todaySent, newTodayRaw, gateMs, counts] = await Promise.all([
+      this.getTodaySent(campaign),
+      this.getTodayFirstContacts(campaign),
+      this.getNextSendGate(campaign),
+      this.ccRepo
+        .createQueryBuilder('cc')
+        .innerJoin('cc.contact', 'c')
+        .select("COUNT(*) FILTER (WHERE cc.status = 'pending' AND NOT c.is_opted_out AND NOT c.is_suppressed)", 'pending')
+        .addSelect(
+          "COUNT(*) FILTER (WHERE cc.status = 'pending' AND NOT c.is_opted_out AND NOT c.is_suppressed AND cc.first_sent_at IS NULL)",
+          'pending_new',
+        )
+        .addSelect("COUNT(*) FILTER (WHERE cc.status = 'failed')", 'failed')
+        .addSelect('COUNT(*)', 'total')
+        .where('cc.campaign_id = :id', { id: campaignId })
+        .getRawOne<{ pending: string; pending_new: string; failed: string; total: string }>(),
+    ]);
+    const pending = Number(counts?.pending ?? 0);
+    const pendingNew = Number(counts?.pending_new ?? 0);
+    const total = Number(counts?.total ?? 0);
+    const failed = Number(counts?.failed ?? 0);
+    // An unreadable counter is reported as the limit being used, matching how sending treats it.
+    const newToday = newTodayRaw >= Number.MAX_SAFE_INTEGER ? newLimit : newTodayRaw;
+    const start = String(campaign.send_window_start ?? '09:00').slice(0, 5);
+    const end = String(campaign.send_window_end ?? '18:00').slice(0, 5);
+    const timezone = campaign.send_window_timezone || 'Asia/Kolkata';
+    const windowOpen = this.isWithinSendWindow(campaign);
+
+    const base = {
+      todaySent,
+      dailyLimit,
+      newToday,
+      newLimit,
+      pending,
+      total,
+      failed,
+      window: { start, end, timezone, open: windowOpen },
+      nextSendAt: gateMs && gateMs > Date.now() ? new Date(gateMs).toISOString() : null,
+    };
+    const say = (state: SendStatus['state'], headline: string, detail: string): SendStatus => ({
+      ...base,
+      state,
+      headline,
+      detail,
+    });
+    const retryHint = failed ? ` ${failed} failed: see "Why messages failed" above, fix it, then Retry failed.` : '';
+
+    const status = String(campaign.status);
+    if (status === 'draft') return say('stopped', 'Not started', 'Press Activate to start sending.');
+    if (status === 'paused') return say('stopped', 'Paused', 'Press Resume to continue sending.' + retryHint);
+    if (status === 'completed') return say('stopped', 'Finished', 'Everyone in this campaign has been tried.' + retryHint);
+    if (status === 'cancelled') return say('stopped', 'Cancelled', 'This campaign will not send again.');
+
+    try {
+      await this.openwa.resolveSessionId(campaign.openwa_session_id);
+    } catch (err) {
+      return say('problem', 'WhatsApp is not connected', (err as Error).message);
+    }
+    if (total === 0) return say('problem', 'No contacts', 'Add contacts to this campaign; there is nobody to message.');
+    if (pending === 0) {
+      return say('idle', 'Nobody waiting', 'Everyone has been messaged; follow-ups go out on their own schedule.' + retryHint);
+    }
+    if (!windowOpen) {
+      return say(
+        'waiting',
+        `Outside sending hours (${start} to ${end})`,
+        `Sending resumes at ${start} ${timezone}. Change the hours below, or press Send now.`,
+      );
+    }
+    if (todaySent >= dailyLimit) {
+      return say(
+        'waiting',
+        `Daily limit reached (${todaySent} of ${dailyLimit})`,
+        'Sending resumes tomorrow. Raise "Messages per day" below to send more today.',
+      );
+    }
+    if (pending === pendingNew && newToday >= newLimit) {
+      return say(
+        'waiting',
+        `New-people limit reached (${newToday} of ${newLimit} today)`,
+        'Everyone waiting would get a first message, and the allowance for today is used. Raise "New people per day" below to send more.',
+      );
+    }
+    if (base.nextSendAt) {
+      return say(
+        'sending',
+        'Sending, with natural gaps',
+        'Messages go out one at a time with random pauses so the number looks human.',
+      );
+    }
+    return say('sending', 'Sending', `${pending} waiting. The next message goes out within a minute.`);
   }
 
   /** Redis key holding the epoch-ms before which this campaign must not send again. */
@@ -676,6 +827,9 @@ export class SendDistributorService {
    * and never allowed to exceed the campaign's own daily limit, which would be incoherent.
    */
   private dailyNewContactLimit(campaign: Campaign): number {
+    if (campaign.daily_new_contact_limit && campaign.daily_new_contact_limit > 0) {
+      return Math.min(campaign.daily_new_contact_limit, campaign.daily_send_limit || 100);
+    }
     const raw = Number(this.config.get<string>('DAILY_NEW_CONTACT_LIMIT') ?? NaN);
     const configured = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 30;
     return Math.min(configured, campaign.daily_send_limit || 100);

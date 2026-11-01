@@ -163,6 +163,8 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
       `ALTER TABLE IF EXISTS message_templates ADD COLUMN IF NOT EXISTS cloud_template_name varchar NULL`,
       `ALTER TABLE IF EXISTS message_templates ADD COLUMN IF NOT EXISTS cloud_template_language varchar NULL`,
       `ALTER TABLE IF EXISTS message_templates ADD COLUMN IF NOT EXISTS cloud_template_params text NULL`,
+      // Not Cloud API specific, but this is the one place schema patches run on boot.
+      `ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS daily_new_contact_limit int NULL`,
     ];
     for (const sql of statements) {
       try {

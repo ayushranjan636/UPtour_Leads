@@ -53,6 +53,13 @@ export class Campaign {
   @Column({ type: 'int', default: 100 })
   daily_send_limit: number;
 
+  /**
+   * How many new people this campaign may message for the first time each day. Null
+   * uses DAILY_NEW_CONTACT_LIMIT (default 30). Never exceeds daily_send_limit.
+   */
+  @Column({ type: 'int', nullable: true })
+  daily_new_contact_limit: number | null;
+
   @Column({ type: 'time', default: '09:00' })
   send_window_start: string;
 

@@ -1,14 +1,39 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { IsInt, IsOptional, Max, Min } from 'class-validator';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { SendDistributorService } from './send-distributor.service';
 import { DistributionPlanQueryDto } from './dto/distribution-plan.dto';
 import { listTriggerConditions, resolveTriggerCondition } from './trigger-conditions';
+
+class SendNowDto {
+  @IsOptional() @IsInt() @Min(1) @Max(50) count?: number;
+}
 
 @ApiTags('Engine')
 @ApiBearerAuth()
 @Controller('engine')
 export class EngineController {
   constructor(private readonly distributor: SendDistributorService) {}
+
+  @Get('campaigns/:id/send-status')
+  @ApiOperation({
+    summary: 'Why a campaign is or is not sending right now',
+    description: 'Counts for today against the limits, the sending hours, and a plain-words reason.',
+  })
+  getSendStatus(@Param('id', ParseUUIDPipe) id: string) {
+    return this.distributor.getSendStatus(id);
+  }
+
+  @Post('campaigns/:id/send-now')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Send the next messages immediately',
+    description:
+      'Skips the sending hours and the random gap, never the daily limits or opt-outs. At most 50 at once.',
+  })
+  sendNow(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SendNowDto) {
+    return this.distributor.sendNow(id, dto.count ?? 5);
+  }
 
   @Get('trigger-conditions')
   @ApiOperation({

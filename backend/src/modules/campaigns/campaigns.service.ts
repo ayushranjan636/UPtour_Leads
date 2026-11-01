@@ -627,6 +627,25 @@ export class CampaignsService extends BaseService<Campaign> {
    * Fields to store on the opening step for the official API, creating the Meta template
    * first when asked. Returns nothing when the QR session is in use.
    */
+  /**
+   * Turn one campaign step's message into a new Meta template and link the step to it.
+   *
+   * Campaigns made before templates could be created at creation time had no way to get
+   * one from the campaign page: "Set Meta template" could only pick an existing template.
+   */
+  async createMetaTemplateForStep(templateId: string, category: 'MARKETING' | 'UTILITY' = 'MARKETING') {
+    const step = await this.templateRepo.findOne({ where: { id: templateId }, relations: ['campaign'] });
+    if (!step) throw new NotFoundException('Campaign step not found');
+    const fields = await this.resolveMetaTemplate(
+      { mode: 'create', category },
+      step.body,
+      { name: `${step.campaign?.name ?? 'campaign'} ${step.name}`, product: step.campaign?.product } as CreateCampaignDto,
+    );
+    Object.assign(step, fields);
+    await this.templateRepo.save(step);
+    return step;
+  }
+
   private async resolveMetaTemplate(
     choice: CreateCampaignDto['meta_template'],
     firstMessage: string | undefined,

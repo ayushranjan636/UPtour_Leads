@@ -35,6 +35,7 @@ import WhatsAppConnectModal, {
   whatsAppStatusLabel,
 } from '../components/WhatsAppConnectModal';
 import WhatsAppCloudPanel from '../components/WhatsAppCloudPanel';
+import AiKeysCard from '../components/AiKeysCard';
 import { useAuth } from '../contexts/AuthContext';
 import { aiAPI, gatewayAPI, isGatewayHealthy, whatsappCloudAPI } from '../services/endpoints';
 import type {
@@ -700,7 +701,16 @@ export default function Settings() {
   const tabItems = [
     { key: 'profile', label: 'Profile', children: <ProfileTab /> },
     { key: 'whatsapp', label: 'WhatsApp', children: <WhatsAppTab /> },
-    { key: 'assistant', label: 'AI Assistant', children: <AssistantTab /> },
+    {
+      key: 'assistant',
+      label: 'AI Assistant',
+      children: (
+        <Flex vertical gap={space.xl} style={{ maxWidth: 640 }}>
+          <AiKeysCard />
+          <AssistantTab />
+        </Flex>
+      ),
+    },
     { key: 'system', label: 'System', children: <SystemTab /> },
   ];
 

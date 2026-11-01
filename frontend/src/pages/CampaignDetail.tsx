@@ -56,6 +56,7 @@ import DatasetFilter, {
 import TriggerConditionField from '../components/TriggerConditionField';
 import MetaTemplateFields from '../components/MetaTemplateFields';
 import CampaignFailuresCard from '../components/CampaignFailuresCard';
+import CampaignSendingCard from '../components/CampaignSendingCard';
 import {
   campaignsAPI,
   templatesAPI,
@@ -82,6 +83,9 @@ interface CampaignData {
   daily_send_limit?: number;
   send_window_start?: string;
   send_window_end?: string;
+  send_window_timezone?: string;
+  /** New people messaged for the first time per day; null uses the server default. */
+  daily_new_contact_limit?: number | null;
   /** null means "not set" — the campaign simply follows the global switch. */
   ai_auto_reply_enabled?: boolean | null;
 }
@@ -663,6 +667,23 @@ export default function CampaignDetail() {
     }
   };
 
+  const [creatingMeta, setCreatingMeta] = useState(false);
+  const createMetaFromStep = async () => {
+    if (!metaEditing) return;
+    setCreatingMeta(true);
+    try {
+      await campaignsAPI.createStepMetaTemplate(metaEditing.id);
+      message.success('Template sent to Meta for approval. The step will send once it is approved.');
+      setMetaEditing(null);
+      fetchCampaign();
+    } catch (err) {
+      const msg = (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message;
+      message.error((Array.isArray(msg) ? msg.join(', ') : msg) || 'Meta did not accept the template.', 10);
+    } finally {
+      setCreatingMeta(false);
+    }
+  };
+
   const handleDeleteTemplate = async (templateId: string) => {
     try {
       await templatesAPI.delete(templateId);
@@ -1004,6 +1025,8 @@ export default function CampaignDetail() {
 
       {id && <CampaignFailuresCard campaignId={id} onRetried={fetchCampaign} />}
 
+      {id && <CampaignSendingCard campaignId={id} campaign={campaign} onChanged={fetchCampaign} />}
+
       <Row gutter={[16, 16]} style={{ marginBottom: space.xl }}>
         {statCards.map((s) => (
           <Col xs={12} sm={8} lg={4} key={s.title}>
@@ -1288,6 +1311,15 @@ export default function CampaignDetail() {
         >
           <MetaTemplateFields form={metaForm} defaultOpen />
         </Form>
+        <Flex vertical gap={space.xs} style={{ marginTop: space.md, paddingTop: space.md, borderTop: `1px solid ${color.separatorOpaque}` }}>
+          <Text style={{ fontSize: font.size.footnote }}>No approved template yet?</Text>
+          <Button loading={creatingMeta} onClick={() => void createMetaFromStep()}>
+            Create a new Meta template from this step&apos;s message
+          </Button>
+          <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+            Sends the step text to Meta for approval, usually within minutes. Merge fields become blanks filled per contact.
+          </Text>
+        </Flex>
       </Modal>
     </div>
   );
