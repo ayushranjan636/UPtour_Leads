@@ -163,6 +163,12 @@ export default function CampaignSendingCard({
               <Text strong>{status.headline}</Text>
             </Flex>
             <Text style={{ fontSize: font.size.footnote, color: color.textSecondary }}>{status.detail}</Text>
+            {status.state === 'sending' && status.nextSendAt && (
+              <Text style={{ fontSize: font.size.footnote }}>
+                Next message at about <strong>{dayjs(status.nextSendAt).format('HH:mm')}</strong>
+                {status.gapMinutes ? ` · roughly one every ${status.gapMinutes} min` : ''}
+              </Text>
+            )}
           </Flex>
           <Space wrap>
             <InputNumber
