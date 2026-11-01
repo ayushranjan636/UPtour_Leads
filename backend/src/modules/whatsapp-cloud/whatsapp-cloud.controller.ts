@@ -38,6 +38,10 @@ class CreateCloudTemplateDto {
   @IsOptional() @IsArray() @ArrayMaxSize(3) @IsString({ each: true }) quickReplies?: string[];
 }
 
+class RegisterNumberDto {
+  @IsString() @MaxLength(6) pin: string;
+}
+
 class SendTestDto {
   @IsString() @MaxLength(30) to: string;
   @IsOptional() @IsString() @MaxLength(512) template?: string;
@@ -158,6 +162,17 @@ export class WhatsappCloudController {
   })
   registerWebhook() {
     return this.cloud.registerWebhook();
+  }
+
+  @Post('cloud/register')
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Register the phone number with the Cloud API',
+    description: 'Needed once for a number added in WhatsApp Manager; until then sends fail with #133010.',
+  })
+  registerNumber(@Body() dto: RegisterNumberDto) {
+    return this.cloud.registerNumber(dto.pin);
   }
 
   @Post('cloud/test')

@@ -14,6 +14,7 @@ import { MessageTemplate } from '../../entities/message-template.entity';
 import { WhatsappCloudService } from '../whatsapp-cloud/whatsapp-cloud.service';
 import { isReplyTriggered, resolveTriggerCondition } from '../engine/trigger-conditions';
 import { metaTemplateName, toMetaTemplate } from '../whatsapp-cloud/meta-template.util';
+import { metaErrorCodeOf, metaErrorHint } from '../whatsapp-cloud/meta-errors';
 
 /** Shape returned by getSendPreview — the facts behind the "send" decision. */
 export interface SendPreview {
@@ -183,6 +184,75 @@ export class CampaignsService extends BaseService<Campaign> {
   }
 
   /** One-liner state transitions using the state machine */
+  /**
+   * Why this campaign's messages failed, grouped by reason, most common first.
+   *
+   * The reason was always stored on the failed message, but the campaign page only
+   * showed a bare "Failed", so a campaign failing for one fixable cause (a missing Meta
+   * template, an unregistered number, an unpaid account) looked like random breakage.
+   */
+  async failureSummary(id: string): Promise<{
+    failed: number;
+    reasons: { reason: string; count: number; lastAt: string | null; hint: string | null }[];
+  }> {
+    await this.findById(id);
+    const rows: { reason: string; count: number; last_at: Date | null }[] = await this.ccRepo.query(
+      `SELECT COALESCE(NULLIF(m.failed_reason, ''), 'No reason was recorded') AS reason,
+              COUNT(*)::int AS count,
+              MAX(m.created_at) AS last_at
+         FROM campaign_contacts cc
+         LEFT JOIN LATERAL (
+           SELECT failed_reason, created_at FROM messages
+            WHERE campaign_contact_id = cc.id AND status = 'failed'
+            ORDER BY created_at DESC LIMIT 1
+         ) m ON true
+        WHERE cc.campaign_id = $1 AND cc.status = 'failed'
+        GROUP BY 1
+        ORDER BY 2 DESC
+        LIMIT 20`,
+      [id],
+    );
+    return {
+      failed: rows.reduce((n, r) => n + Number(r.count), 0),
+      reasons: rows.map((r) => ({
+        reason: r.reason,
+        count: Number(r.count),
+        lastAt: r.last_at ? new Date(r.last_at).toISOString() : null,
+        // Reasons stored before fixes were attached carry only Meta's code.
+        hint: /Fix: /.test(r.reason) ? null : metaErrorHint(metaErrorCodeOf(r.reason)),
+      })),
+    };
+  }
+
+  /**
+   * Put failed contacts back in the queue, once whatever made them fail is fixed.
+   *
+   * Refuses while the official API would refuse again, so a retry cannot just repeat
+   * the failure. A campaign that "completed" only because every send failed is reopened:
+   * completion is normally final, but here it recorded nothing but failures.
+   */
+  async retryFailed(id: string): Promise<{ requeued: number; status: CampaignStatus }> {
+    const campaign = await this.findById(id);
+    const templates = await this.templateRepo.find({ where: { campaign_id: id } });
+    const blockers = await this.cloudTemplateBlockers(templates);
+    if (blockers.length) throw new BadRequestException(blockers.join(' '));
+
+    const result = await this.ccRepo.update(
+      { campaign_id: id, status: 'failed' as any },
+      { status: 'pending' as any },
+    );
+    const requeued = result.affected ?? 0;
+    if (requeued === 0) return { requeued, status: campaign.status };
+
+    let status = campaign.status;
+    if (status === CampaignStatus.COMPLETED) {
+      await this.repo.update(id, { status: CampaignStatus.ACTIVE });
+      status = CampaignStatus.ACTIVE;
+    }
+    this.logger.log(`Campaign ${campaign.name}: ${requeued} failed contacts queued again (${status})`);
+    return { requeued, status };
+  }
+
   /**
    * Start sending, unless the official API would refuse every message.
    *

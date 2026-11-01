@@ -186,8 +186,11 @@ export class MessageSendProcessor extends WorkerHost {
         // last message. Failing here names the fix instead of burning a send on an
         // error code nobody will recognise.
         throw new Error(
-          `WhatsApp Cloud API needs an approved Meta template to message ${contact.name || contact.whatsapp_number}: ` +
-            `they have not written in the last 24 hours. Set a Meta template on "${activeTemplate.name}".`,
+          // Identical for every contact on purpose: the campaign's failure summary groups by
+          // this text, and one cause should read as one line, not one line per person.
+          'The official WhatsApp API needs an approved Meta template for people who have not ' +
+            `written to you in the last 24 hours. Set a Meta template on "${activeTemplate.name}", ` +
+            'then press Retry failed.',
         );
       } else if (activeTemplate.type === 'text' || !activeTemplate.media_url) {
         openwaResult = await this.openwa.sendText(resolvedSessionId, chatId, renderedBody);

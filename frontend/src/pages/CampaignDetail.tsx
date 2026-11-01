@@ -55,6 +55,7 @@ import DatasetFilter, {
 } from '../components/DatasetFilter';
 import TriggerConditionField from '../components/TriggerConditionField';
 import MetaTemplateFields from '../components/MetaTemplateFields';
+import CampaignFailuresCard from '../components/CampaignFailuresCard';
 import {
   campaignsAPI,
   templatesAPI,
@@ -1000,6 +1001,8 @@ export default function CampaignDetail() {
           </>
         }
       />
+
+      {id && <CampaignFailuresCard campaignId={id} onRetried={fetchCampaign} />}
 
       <Row gutter={[16, 16]} style={{ marginBottom: space.xl }}>
         {statCards.map((s) => (

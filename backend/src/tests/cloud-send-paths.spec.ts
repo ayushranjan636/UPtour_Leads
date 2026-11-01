@@ -482,3 +482,36 @@ describe('Creating a campaign that runs on the official API', () => {
     expect(blockers).toEqual([expect.stringMatching(/waiting for Meta's approval \(pending\)/)]);
   });
 });
+
+describe('Failed campaign messages: why, and retry', () => {
+  async function campaignsWith(query: any, ccUpdate: any, campaign: any, cloudSvc?: WhatsappCloudService) {
+    const { CampaignsService } = await import('../modules/campaigns/campaigns.service');
+    const repo = { findOne: vi.fn(async () => campaign), update: vi.fn(async () => ({})) };
+    const ccRepo = { query, update: ccUpdate };
+    const templateRepo = { find: vi.fn(async () => []) };
+    const svc = new CampaignsService(repo as any, ccRepo as any, {} as any, templateRepo as any, {} as any, cloudSvc);
+    vi.spyOn(svc as any, 'findById').mockResolvedValue(campaign);
+    return { svc, repo };
+  }
+
+  it('groups failures by reason and adds the fix for known Meta errors', async () => {
+    const query = vi.fn(async () => [
+      { reason: '(#133010) Account not registered', count: 12, last_at: new Date('2026-11-01T05:00:00Z') },
+      { reason: 'Something else', count: '1', last_at: null },
+    ]);
+    const { svc } = await campaignsWith(query, vi.fn(), { id: 'c1', status: 'active' });
+    const res = await svc.failureSummary('c1');
+    expect(res.failed).toBe(13);
+    expect(res.reasons[0]).toMatchObject({ reason: '(#133010) Account not registered', count: 12 });
+    expect(res.reasons[0].hint).toMatch(/not registered with the Cloud API/);
+    expect(res.reasons[1].hint).toBeNull();
+  });
+
+  it('reopens a campaign that "completed" only because every send failed', async () => {
+    const ccUpdate = vi.fn(async () => ({ affected: 5 }));
+    const { svc, repo } = await campaignsWith(vi.fn(), ccUpdate, { id: 'c1', name: 'X', status: 'completed' });
+    await expect(svc.retryFailed('c1')).resolves.toEqual({ requeued: 5, status: 'active' });
+    expect(ccUpdate).toHaveBeenCalledWith({ campaign_id: 'c1', status: 'failed' }, { status: 'pending' });
+    expect(repo.update).toHaveBeenCalledWith('c1', { status: 'active' });
+  });
+});
