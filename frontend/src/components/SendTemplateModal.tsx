@@ -68,7 +68,11 @@ export default function SendTemplateModal({ open, contact, onClose, onSent }: Pr
 
   const preview = useMemo(() => {
     if (!selected?.body) return '';
-    return selected.body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, n) => params[Number(n) - 1] || `{{${n}}}`);
+    const names = selected.bodyParamNames ?? [];
+    return selected.body.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, n) => {
+      const i = names.length ? names.indexOf(n) : Number(n) - 1;
+      return (i >= 0 && params[i]) || `{{${n}}}`;
+    });
   }, [selected, params]);
 
   const send = async () => {
@@ -129,7 +133,7 @@ export default function SendTemplateModal({ open, contact, onClose, onSent }: Pr
           {params.map((p, i) => (
             <Input
               key={i}
-              addonBefore={`{{${i + 1}}}`}
+              addonBefore={`{{${selected?.bodyParamNames?.[i] ?? i + 1}}}`}
               value={p}
               onChange={(e) => setParams((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))}
             />

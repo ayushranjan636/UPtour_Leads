@@ -45,6 +45,7 @@ import DatasetFilter, {
   type DatasetFilterValue,
 } from '../components/DatasetFilter';
 import { campaignsAPI, contactsAPI, whatsappCloudAPI } from '../services/endpoints';
+import CampaignStatusLine from '../components/CampaignStatusLine';
 import CampaignMetaTemplateSection, {
   buildMetaTemplatePayload,
 } from '../components/CampaignMetaTemplateSection';
@@ -483,6 +484,8 @@ export default function Campaigns() {
                       Target: {campaign.target_country}
                     </Text>
                   )}
+
+                  {campaign.status === 'active' && <CampaignStatusLine campaignId={campaign.id} />}
 
                   {sent > 0 && (
                     <Progress

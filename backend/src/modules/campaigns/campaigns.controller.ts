@@ -114,6 +114,18 @@ export class CampaignsController {
     return this.svc.getStats(id);
   }
 
+  @Post('steps/:templateId/meta-template')
+  @ApiOperation({
+    summary: 'Create a Meta template from a campaign step and link the step to it',
+    description: 'Submits the step text to Meta for approval. The step sends once Meta approves it.',
+  })
+  createMetaTemplateForStep(
+    @Param('templateId', ParseUUIDPipe) templateId: string,
+    @Body() body: { category?: 'MARKETING' | 'UTILITY' },
+  ) {
+    return this.svc.createMetaTemplateForStep(templateId, body?.category === 'UTILITY' ? 'UTILITY' : 'MARKETING');
+  }
+
   @Get(':id/failures')
   @ApiOperation({
     summary: 'Why messages failed',

@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -30,8 +31,18 @@ interface AIProvider {
   isAvailable(): boolean;
 }
 
+/** AI keys saved from Settings. Each falls back to its environment variable. */
+export interface AiKeySettings {
+  openaiKey?: string;
+  openaiModel?: string;
+  geminiKey?: string;
+  geminiModel?: string;
+}
+
+const AI_KEYS_SETTING = 'ai.keys';
+
 @Injectable()
-export class AiService {
+export class AiService implements OnModuleInit {
   private readonly logger = new Logger(AiService.name);
   private providers: AIProvider[] = [];
 
@@ -41,16 +52,104 @@ export class AiService {
     gemini: { calls: 0, failures: 0, totalMs: 0 },
   };
 
-  constructor(private readonly config: ConfigService) {
+  /** Keys saved in Settings; empty until loaded. Env vars fill whatever is missing. */
+  private saved: AiKeySettings = {};
+
+  constructor(
+    private readonly config: ConfigService,
+    // Optional so tests can build the service from config alone.
+    @Optional() private readonly dataSource?: DataSource,
+  ) {
     this.initProviders();
   }
 
+  /**
+   * Load keys saved from Settings.
+   *
+   * Keys used to live only in the server's environment file, so turning AI replies on
+   * meant editing the server and redeploying. Saved keys win over env vars.
+   */
+  async onModuleInit(): Promise<void> {
+    if (!this.dataSource) return;
+    try {
+      await this.dataSource.query(
+        'CREATE TABLE IF NOT EXISTS app_settings (key varchar(100) PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())',
+      );
+      const rows = await this.dataSource.query('SELECT value FROM app_settings WHERE key = $1', [AI_KEYS_SETTING]);
+      this.saved = rows?.[0]?.value ?? {};
+      this.initProviders();
+    } catch (err) {
+      this.logger.warn(`Could not load saved AI keys: ${(err as Error).message}`);
+    }
+  }
+
+  /** Effective key or model: saved value first, then the environment. */
+  private setting(saved: string | undefined, envKey: string, fallback = ''): string {
+    return saved?.trim() || this.config.get<string>(envKey)?.trim() || fallback;
+  }
+
+  /** What Settings shows. Keys are never returned, only their last four characters. */
+  getKeyState() {
+    const describe = (savedKey: string | undefined, envKey: string, model: string) => {
+      const key = this.setting(savedKey, envKey);
+      return {
+        configured: !!key,
+        source: savedKey?.trim() ? 'portal' : key ? 'env' : 'none',
+        keyHint: key ? `…${key.slice(-4)}` : null,
+        model,
+      };
+    };
+    return {
+      openai: describe(this.saved.openaiKey, 'OPENAI_API_KEY', this.setting(this.saved.openaiModel, 'OPENAI_MODEL', 'gpt-4o')),
+      gemini: describe(this.saved.geminiKey, 'GEMINI_API_KEY', this.setting(this.saved.geminiModel, 'GEMINI_MODEL', 'gemini-2.0-flash')),
+      active: this.providers.map((p) => p.name),
+    };
+  }
+
+  /**
+   * Save keys from Settings and switch to them immediately. A blank field keeps the
+   * saved value; the literal "-" removes it.
+   */
+  async saveKeys(input: AiKeySettings) {
+    if (!this.dataSource) throw new BadRequestException('Settings storage is unavailable.');
+    const merge = (next: string | undefined, prev: string | undefined) =>
+      next === '-' ? undefined : next?.trim() ? next.trim() : prev;
+    this.saved = {
+      openaiKey: merge(input.openaiKey, this.saved.openaiKey),
+      openaiModel: merge(input.openaiModel, this.saved.openaiModel),
+      geminiKey: merge(input.geminiKey, this.saved.geminiKey),
+      geminiModel: merge(input.geminiModel, this.saved.geminiModel),
+    };
+    await this.dataSource.query(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [AI_KEYS_SETTING, JSON.stringify(this.saved)],
+    );
+    this.initProviders();
+    return this.getKeyState();
+  }
+
+  /** Ask one provider for a one-word answer, to prove the key and model work. */
+  async testProvider(name: 'openai' | 'gemini'): Promise<{ ok: true; reply: string; ms: number }> {
+    const provider = this.providers.find((p) => p.name === name);
+    if (!provider) throw new BadRequestException(`No ${name === 'openai' ? 'OpenAI' : 'Gemini'} key is set.`);
+    const started = Date.now();
+    try {
+      const reply = await provider.call('Reply with the single word OK.', 'Are you working?', false);
+      return { ok: true, reply: reply.trim().slice(0, 100), ms: Date.now() - started };
+    } catch (err) {
+      throw new BadRequestException(`${name === 'openai' ? 'OpenAI' : 'Gemini'} rejected the request: ${(err as Error).message}`);
+    }
+  }
+
   private initProviders() {
+    // Rebuilt from scratch so a changed or removed key takes effect at once.
+    this.providers = [];
     // Primary: OpenAI
-    const openaiKey = this.config.get<string>('OPENAI_API_KEY');
+    const openaiKey = this.setting(this.saved.openaiKey, 'OPENAI_API_KEY');
     if (openaiKey) {
       const openai = new OpenAI({ apiKey: openaiKey });
-      const model = this.config.get<string>('OPENAI_MODEL', 'gpt-4o');
+      const model = this.setting(this.saved.openaiModel, 'OPENAI_MODEL', 'gpt-4o');
 
       this.providers.push({
         name: 'openai',
@@ -73,10 +172,10 @@ export class AiService {
     }
 
     // Fallback: Gemini
-    const geminiKey = this.config.get<string>('GEMINI_API_KEY');
+    const geminiKey = this.setting(this.saved.geminiKey, 'GEMINI_API_KEY');
     if (geminiKey) {
       const genAI = new GoogleGenerativeAI(geminiKey);
-      const geminiModel = this.config.get<string>('GEMINI_MODEL', 'gemini-2.0-flash');
+      const geminiModel = this.setting(this.saved.geminiModel, 'GEMINI_MODEL', 'gemini-2.0-flash');
 
       this.providers.push({
         name: 'gemini',
@@ -98,7 +197,7 @@ export class AiService {
     }
 
     if (this.providers.length === 0) {
-      this.logger.warn('⚠️ No AI providers configured. Set OPENAI_API_KEY or GEMINI_API_KEY');
+      this.logger.warn('⚠️ No AI providers configured. Add a Gemini or OpenAI key in Settings → AI Assistant');
     }
   }
 

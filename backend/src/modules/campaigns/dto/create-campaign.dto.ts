@@ -87,6 +87,17 @@ export class CreateCampaignDto {
   @Max(200)
   daily_send_limit?: number;
 
+  @ApiPropertyOptional({
+    description: 'New people to message for the first time per day. Defaults to 30; capped by daily_send_limit.',
+    minimum: 1,
+    maximum: 200,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  daily_new_contact_limit?: number;
+
   @ApiPropertyOptional({ description: 'Send window start time (HH:mm)', example: '09:00' })
   @IsOptional()
   @IsString()

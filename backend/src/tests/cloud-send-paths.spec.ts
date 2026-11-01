@@ -101,6 +101,8 @@ const campaignJob = {
 let post: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   post = vi.spyOn(axios, 'post').mockResolvedValue({ data: { messages: [{ id: 'wamid.TEST' }] } } as any);
+  // Template definitions Meta returns; empty unless a test needs one.
+  vi.spyOn(axios, 'get').mockResolvedValue({ data: { data: [] } } as any);
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -513,5 +515,60 @@ describe('Failed campaign messages: why, and retry', () => {
     await expect(svc.retryFailed('c1')).resolves.toEqual({ requeued: 5, status: 'active' });
     expect(ccUpdate).toHaveBeenCalledWith({ campaign_id: 'c1', status: 'failed' }, { status: 'pending' });
     expect(repo.update).toHaveBeenCalledWith('c1', { status: 'active' });
+  });
+});
+
+describe('Templates with named blanks ({{customer_name}})', () => {
+  it('sends each value with its parameter name, in the template order', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        data: [
+          {
+            name: 'tour_offer',
+            language: 'en_US',
+            status: 'APPROVED',
+            category: 'MARKETING',
+            parameter_format: 'NAMED',
+            components: [{ type: 'BODY', text: 'Hi {{customer_name}}, our {{tour}} tour is open. Interested?' }],
+          },
+        ],
+      },
+    } as any);
+    const { sender } = makeCloud();
+    const { proc } = makeProcessor(sender, [
+      {
+        id: 't1',
+        name: 'Opening',
+        type: 'text',
+        body: 'Hi',
+        sequence_order: 0,
+        cloud_template_name: 'tour_offer',
+        cloud_template_language: 'en',
+        cloud_template_params: ['{{contact_name}}', '{{product}}'],
+      },
+    ]);
+    await proc.process(campaignJob);
+    const body = post.mock.calls[0][1] as any;
+    // The approved language is used even though the step stored "en".
+    expect(body.template.language).toEqual({ code: 'en_US' });
+    expect(body.template.components).toEqual([
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', parameter_name: 'customer_name', text: 'Asha' },
+          { type: 'text', parameter_name: 'tour', text: 'Heritage tour' },
+        ],
+      },
+    ]);
+  });
+
+  it('matches the number of values to the template, padding or trimming', () => {
+    const def: any = { bodyParamNames: ['1', '2'], parameterFormat: 'POSITIONAL' };
+    expect(WhatsappCloudService.shapeBodyParams(['a'], def)).toEqual([
+      { type: 'text', text: 'a' },
+      { type: 'text', text: '-' },
+    ]);
+    expect(WhatsappCloudService.shapeBodyParams(['a', 'b', 'c'], def)).toHaveLength(2);
+    expect(WhatsappCloudService.shapeBodyParams(['a'], { bodyParamNames: [], parameterFormat: 'POSITIONAL' } as any)).toEqual([]);
   });
 });
