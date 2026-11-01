@@ -12,6 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import axios, { AxiosError } from 'axios';
 import { randomBytes } from 'crypto';
+import { metaErrorHint } from './meta-errors';
 
 /** Which transport carries WhatsApp traffic. */
 export type WhatsAppProvider = 'session' | 'cloud';
@@ -50,6 +51,11 @@ export interface CloudState {
   phone: string | null;
   verifiedName: string | null;
   qualityRating: string | null;
+  /**
+   * Whether the number is registered with the Cloud API. False means every send fails
+   * with #133010 until it is registered; null when Meta did not say.
+   */
+  registered: boolean | null;
   phoneNumberId: string | null;
   wabaId: string | null;
   apiVersion: string;
@@ -447,6 +453,7 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
       phone: null,
       verifiedName: null,
       qualityRating: null,
+      registered: null,
       phoneNumberId: config?.phoneNumberId ?? null,
       wabaId: config?.wabaId || null,
       apiVersion: config?.apiVersion ?? DEFAULT_API_VERSION,
@@ -463,7 +470,7 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
 
     try {
       const { data } = await axios.get(`${GRAPH_BASE}/${config.apiVersion}/${config.phoneNumberId}`, {
-        params: { fields: 'display_phone_number,verified_name,quality_rating' },
+        params: { fields: 'display_phone_number,verified_name,quality_rating,platform_type' },
         headers: { Authorization: `Bearer ${config.accessToken}` },
         timeout: 10_000,
       });
@@ -474,7 +481,15 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
         phone: data?.display_phone_number ?? null,
         verifiedName: data?.verified_name ?? null,
         qualityRating: data?.quality_rating ?? null,
-        message: name ? `Connected as ${name}` : 'Connected',
+        // CLOUD_API once registered; NOT_APPLICABLE (or absent) for a number only added in
+        // WhatsApp Manager, which looks connected here but cannot send.
+        registered: data?.platform_type ? data.platform_type === 'CLOUD_API' : null,
+        message:
+          data?.platform_type && data.platform_type !== 'CLOUD_API'
+            ? `${name || 'This number'} is not registered with the Cloud API yet, so messages cannot send. Register it below.`
+            : name
+              ? `Connected as ${name}`
+              : 'Connected',
       };
     } catch (err) {
       return { ...base, message: `Meta API error: ${this.describeError(err)}` };
@@ -605,6 +620,32 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
     }
   }
 
+  /**
+   * Register the phone number with the Cloud API.
+   *
+   * A number added in WhatsApp Manager is not usable for sending until this call is
+   * made once with a 6-digit PIN, which also becomes its two-step verification PIN.
+   * Until then every message fails with #133010.
+   */
+  async registerNumber(pin: string): Promise<CloudState> {
+    const cfg = await this.requireConfig();
+    if (!/^\d{6}$/.test(pin ?? '')) {
+      throw new BadRequestException('The PIN must be exactly 6 digits.');
+    }
+    try {
+      await axios.post(
+        `${GRAPH_BASE}/${cfg.apiVersion}/${cfg.phoneNumberId}/register`,
+        { messaging_product: 'whatsapp', pin },
+        { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 30_000 },
+      );
+      this.logger.log(`Registered phone number ${cfg.phoneNumberId} with the Cloud API`);
+    } catch (err) {
+      throw new BadRequestException(`Meta did not register the number: ${this.describeError(err)}`);
+    }
+    this.cache = null;
+    return this.getState();
+  }
+
   // ─── Sending ───────────────────────────────────────────────────────────────
 
   /** `cloud:<phone_number_id>` for the connected number. */
@@ -714,7 +755,13 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
     const e = ax?.response?.data?.error;
     if (e) {
       const detail = e.error_data?.details;
-      return [e.code ? `(#${e.code})` : null, e.message, detail && detail !== e.message ? `- ${detail}` : null]
+      const hint = metaErrorHint(e.code);
+      return [
+        e.code ? `(#${e.code})` : null,
+        e.message,
+        detail && detail !== e.message ? `- ${detail}` : null,
+        hint ? `Fix: ${hint}` : null,
+      ]
         .filter(Boolean)
         .join(' ');
     }

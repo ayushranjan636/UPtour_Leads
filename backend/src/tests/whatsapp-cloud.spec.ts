@@ -79,7 +79,11 @@ describe('translateCloudWebhook', () => {
       }),
     );
     expect(evt.event).toBe('message.failed');
-    expect(evt.data.reason).toBe('(#131047) Re-engagement message - More than 24 hours have passed');
+    expect(
+      evt.data.reason.startsWith('(#131047) Re-engagement message - More than 24 hours have passed Fix: '),
+    ).toBe(true);
+    // The stored reason tells the operator what to do, not just Meta's code.
+    expect(evt.data.reason).toMatch(/only an approved template can be sent/);
   });
 
   it('ignores payloads that are not WhatsApp business account events', () => {

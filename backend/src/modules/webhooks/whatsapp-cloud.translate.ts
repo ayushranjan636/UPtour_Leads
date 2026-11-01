@@ -1,3 +1,5 @@
+import { metaErrorHint } from '../whatsapp-cloud/meta-errors';
+
 /**
  * Translate a Meta WhatsApp Cloud API webhook into the portal's internal events.
  *
@@ -98,6 +100,7 @@ export function translateCloudWebhook(payload: any): InternalWebhookEvent[] {
             err.code ? `(#${err.code})` : null,
             err.title ?? err.message ?? 'Delivery failed',
             detail ? `- ${detail}` : null,
+            metaErrorHint(err.code) ? `Fix: ${metaErrorHint(err.code)}` : null,
           ]
             .filter(Boolean)
             .join(' ');

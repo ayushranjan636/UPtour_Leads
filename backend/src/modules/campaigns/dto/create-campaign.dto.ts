@@ -8,10 +8,37 @@ import {
   MaxLength,
   IsObject,
   IsBoolean,
+  IsIn,
+  IsArray,
+  ArrayMaxSize,
+  ValidateNested,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { resolveTimezone } from '../../../common/utils/timezone.util';
+
+/**
+ * How the opening message is sent when the official WhatsApp Cloud API is active.
+ *
+ * `create` turns `first_message` into a new Meta template and submits it for approval.
+ * `existing` uses a template Meta has already approved.
+ */
+export class MetaTemplateChoiceDto {
+  @IsIn(['create', 'existing'])
+  mode: 'create' | 'existing';
+
+  @IsOptional() @IsString() @MaxLength(512)
+  name?: string;
+
+  @IsOptional() @IsString() @MaxLength(15)
+  language?: string;
+
+  @IsOptional() @IsIn(['MARKETING', 'UTILITY'])
+  category?: 'MARKETING' | 'UTILITY';
+
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true })
+  params?: string[];
+}
 
 export class CreateCampaignDto {
   @ApiProperty({ description: 'Campaign name', example: 'Summer Outreach 2026' })
@@ -138,4 +165,15 @@ export class CreateCampaignDto {
   @IsOptional()
   @IsObject()
   audience?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description:
+      'Official WhatsApp Cloud API only: create a Meta template from first_message, or ' +
+      'use an approved one, so the campaign can message people who have not written first.',
+    type: MetaTemplateChoiceDto,
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MetaTemplateChoiceDto)
+  meta_template?: MetaTemplateChoiceDto;
 }

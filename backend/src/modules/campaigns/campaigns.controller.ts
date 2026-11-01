@@ -113,4 +113,22 @@ export class CampaignsController {
   getStats(@Param('id', ParseUUIDPipe) id: string) {
     return this.svc.getStats(id);
   }
+
+  @Get(':id/failures')
+  @ApiOperation({
+    summary: 'Why messages failed',
+    description: 'Failed contacts grouped by failure reason, with a suggested fix for known WhatsApp errors.',
+  })
+  failures(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.failureSummary(id);
+  }
+
+  @Post(':id/retry-failed')
+  @ApiOperation({
+    summary: 'Queue failed contacts again',
+    description: 'Use after fixing the cause. Reopens a campaign that completed only because every send failed.',
+  })
+  retryFailed(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.retryFailed(id);
+  }
 }

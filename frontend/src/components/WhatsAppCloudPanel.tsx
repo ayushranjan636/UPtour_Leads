@@ -159,6 +159,22 @@ export default function WhatsAppCloudPanel({ onProviderChanged }: { onProviderCh
     }
   };
 
+  const [pin, setPin] = useState('');
+  const [registeringNumber, setRegisteringNumber] = useState(false);
+  const registerNumber = async () => {
+    setRegisteringNumber(true);
+    try {
+      await whatsappCloudAPI.registerNumber(pin);
+      message.success('Number registered. Messages can send now.');
+      setPin('');
+      await load();
+    } catch (err) {
+      message.error(errorText(err, 'Meta did not register the number.'), 10);
+    } finally {
+      if (mounted.current) setRegisteringNumber(false);
+    }
+  };
+
   const disconnect = async () => {
     setDisconnecting(true);
     try {
@@ -279,6 +295,39 @@ export default function WhatsAppCloudPanel({ onProviderChanged }: { onProviderCh
               <Row label="Access token" value={cloud.accessTokenHint ?? '—'} />
               <Row label="Credentials from" value={cloud.source === 'env' ? 'Server environment' : 'This portal'} />
             </Flex>
+          )}
+
+          {cloud.connected && cloud.registered === false && (
+            <Alert
+              type="error"
+              showIcon
+              title="This number is not registered yet, so no message can send"
+              description={
+                <Flex vertical gap={space.sm}>
+                  <Text style={{ fontSize: font.size.footnote }}>
+                    Choose any 6-digit PIN and press Register. Keep the PIN: it becomes the number’s two-step
+                    verification PIN. If the number already has one, enter that same PIN.
+                  </Text>
+                  <Flex gap={space.sm}>
+                    <Input
+                      value={pin}
+                      onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="6-digit PIN"
+                      inputMode="numeric"
+                      style={{ maxWidth: 160 }}
+                    />
+                    <Button
+                      type="primary"
+                      loading={registeringNumber}
+                      disabled={pin.length !== 6}
+                      onClick={() => void registerNumber()}
+                    >
+                      Register number
+                    </Button>
+                  </Flex>
+                </Flex>
+              }
+            />
           )}
 
           {cloud.configured && !cloud.hasAppSecret && (

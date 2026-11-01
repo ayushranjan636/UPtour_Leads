@@ -135,6 +135,12 @@ export interface CampaignDeletionReport {
   };
 }
 
+/** Why a campaign's messages failed, grouped by reason. */
+export interface CampaignFailureSummary {
+  failed: number;
+  reasons: { reason: string; count: number; lastAt: string | null; hint: string | null }[];
+}
+
 export const campaignsAPI = {
   list: (params?: Record<string, unknown>) =>
     api.get('/campaigns', { params }),
@@ -166,6 +172,11 @@ export const campaignsAPI = {
   getContacts: (id: string, params?: Record<string, unknown>) =>
     api.get(`/campaigns/${id}/contacts`, { params }),
   getStats: (id: string) => api.get(`/campaigns/${id}/stats`),
+  /** Failed contacts grouped by reason, each with a suggested fix where one is known. */
+  failures: (id: string) => api.get<CampaignFailureSummary>(`/campaigns/${id}/failures`),
+  /** Queue failed contacts again after fixing the cause. */
+  retryFailed: (id: string) =>
+    api.post<{ requeued: number; status: string }>(`/campaigns/${id}/retry-failed`),
 };
 
 /* ── Templates ────────────────────────────────────── */
@@ -502,6 +513,8 @@ export interface WhatsAppCloudState {
   verifiedName: string | null;
   /** GREEN / YELLOW / RED from Meta; drops when recipients block or report you. */
   qualityRating: string | null;
+  /** False means the number must be registered (with a PIN) before anything can send. */
+  registered: boolean | null;
   phoneNumberId: string | null;
   wabaId: string | null;
   apiVersion: string;
@@ -579,6 +592,8 @@ export const whatsappCloudAPI = {
     api.delete<{ deleted: boolean }>(`/whatsapp/cloud/templates/${encodeURIComponent(name)}`),
   /** Points Meta's webhooks for the account at this portal. */
   registerWebhook: () => api.post<WhatsAppCloudState>('/whatsapp/cloud/webhook'),
+  /** One-time registration of the number with a 6-digit PIN. */
+  registerNumber: (pin: string) => api.post<WhatsAppCloudState>('/whatsapp/cloud/register', { pin }),
   sendTest: (data: { to: string; template?: string; language?: string; text?: string }) =>
     api.post<{ messageId: string; to: string }>('/whatsapp/cloud/test', data),
 };

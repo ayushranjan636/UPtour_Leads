@@ -328,6 +328,9 @@ describe('Templates, webhook and campaign checks on the Cloud API', () => {
   });
 
   it('blocks launching a campaign whose opening or no-reply steps have no Meta template', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: { data: [{ name: 'heritage_intro', language: 'en', status: 'APPROVED', components: [] }] },
+    } as any);
     const { CampaignsService } = await import('../modules/campaigns/campaigns.service');
     const svc = new CampaignsService({} as any, {} as any, {} as any, {} as any, {} as any, cloudWith());
     const blockers: string[] = await (svc as any).cloudTemplateBlockers([
@@ -359,5 +362,156 @@ describe('Templates, webhook and campaign checks on the Cloud API', () => {
     expect(saved).toMatchObject({ status: 'sent', body: 'Namaste Asha!', openwa_message_id: 'wamid.TEST' });
     // No 24-hour check: templates are exactly what Meta allows outside the window.
     expect(messageRepository.findOne).not.toHaveBeenCalled();
+  });
+});
+
+describe('Creating a campaign that runs on the official API', () => {
+  it('converts the first message into a Meta template: first spintax variant, numbered blanks', async () => {
+    const { toMetaTemplate } = await import('../modules/whatsapp-cloud/meta-template.util');
+    const draft = toMetaTemplate('{Hi|Hello} {{contact_name}}, a {{product}} for {{company_name}} guests, {{contact_name}}? Shall we talk?', {
+      product: 'Buddhist circuit',
+    });
+    expect(draft.body).toBe('Hi {{1}}, a {{2}} for {{3}} guests, {{1}}? Shall we talk?');
+    expect(draft.params).toEqual(['{{contact_name}}', '{{product}}', '{{company_name}}']);
+    expect(draft.examples).toEqual(['Asha', 'Buddhist circuit', 'Hill Palace Tours']);
+    expect(draft.problems).toEqual([]);
+  });
+
+  it('flags text Meta would reject before anything is sent', async () => {
+    const { toMetaTemplate } = await import('../modules/whatsapp-cloud/meta-template.util');
+    expect(toMetaTemplate('{{contact_name}} hello').problems[0]).toMatch(/start with a merge field/);
+    expect(toMetaTemplate('Hello {{contact_name}}').problems[0]).toMatch(/end with a merge field/);
+  });
+
+  function makeCampaigns(cloud: WhatsappCloudService) {
+    const saved: any[] = [];
+    const repo = {
+      create: (d: any) => d,
+      save: vi.fn(async (d: any) => ({ id: 'camp-new', ...d })),
+    };
+    const templateRepo = {
+      create: (d: any) => d,
+      save: vi.fn(async (d: any) => {
+        saved.push(d);
+        return d;
+      }),
+    };
+    return import('../modules/campaigns/campaigns.service').then(({ CampaignsService }) => ({
+      svc: new CampaignsService(repo as any, {} as any, {} as any, templateRepo as any, {} as any, cloud),
+      saved,
+      repo,
+    }));
+  }
+
+  function cloud() {
+    const settings: Record<string, unknown> = {
+      'whatsapp.provider': 'cloud',
+      'whatsapp.cloud': {
+        accessToken: 'EAAtest',
+        phoneNumberId: PNID,
+        wabaId: '2296119621207013',
+        appSecret: 's',
+        verifyToken: 'v',
+        apiVersion: 'v23.0',
+      },
+    };
+    const svc = new WhatsappCloudService(
+      { get: () => undefined } as any,
+      { query: vi.fn(async (_q: string, p?: unknown[]) => (p?.[0] as string) in settings ? [{ value: settings[p![0] as string] }] : []) } as any,
+    );
+    (svc as any).logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    return svc;
+  }
+
+  it('submits the first message to Meta and links the opening step to it', async () => {
+    post.mockResolvedValueOnce({ data: { id: 't', status: 'PENDING' } } as any);
+    const { svc, saved } = await makeCampaigns(cloud());
+    await svc.createCampaign(
+      {
+        name: 'THAILAND BUDDHIST 2',
+        product: 'buddhist',
+        first_message: 'Namaste {{contact_name}}, we run buddhist tours. Interested?',
+        meta_template: { mode: 'create' },
+      } as any,
+      'user-1',
+    );
+    const [url, body] = post.mock.calls[0] as any[];
+    expect(url).toMatch(/\/message_templates$/);
+    expect(body.name).toMatch(/^thailand_buddhist_2_[a-z0-9]+$/);
+    expect(body.components[0]).toEqual({
+      type: 'BODY',
+      text: 'Namaste {{1}}, we run buddhist tours. Interested?',
+      example: { body_text: [['Asha']] },
+    });
+    expect(saved[0]).toMatchObject({
+      name: 'Opening message',
+      body: 'Namaste {{contact_name}}, we run buddhist tours. Interested?',
+      cloud_template_name: body.name,
+      cloud_template_language: 'en',
+      cloud_template_params: ['{{contact_name}}'],
+    });
+  });
+
+  it('creates nothing when Meta would reject the text, and says why', async () => {
+    const { svc, repo } = await makeCampaigns(cloud());
+    await expect(
+      svc.createCampaign({ name: 'X', first_message: 'Hello {{contact_name}}', meta_template: { mode: 'create' } } as any, 'u'),
+    ).rejects.toThrow(/end with a merge field/);
+    expect(repo.save).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('refuses to activate from the campaign list while the opening step has no Meta template', async () => {
+    const { svc } = await makeCampaigns(cloud());
+    (svc as any).templateRepo.find = vi.fn(async () => [
+      { name: 'Opening message', trigger_condition: 'initial', cloud_template_name: null },
+    ]);
+    const transition = vi.spyOn(svc as any, 'transitionTo');
+    await expect(svc.activate('camp-1')).rejects.toThrow(/"Opening message" needs an approved Meta template/);
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it('holds activation until Meta approves the template', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: { data: [{ name: 'thailand_buddhist_2_abc', language: 'en', status: 'PENDING', components: [] }] },
+    } as any);
+    const { svc } = await makeCampaigns(cloud());
+    const blockers: string[] = await (svc as any).cloudTemplateBlockers([
+      { name: 'Opening message', trigger_condition: 'initial', cloud_template_name: 'thailand_buddhist_2_abc', cloud_template_language: 'en' },
+    ]);
+    expect(blockers).toEqual([expect.stringMatching(/waiting for Meta's approval \(pending\)/)]);
+  });
+});
+
+describe('Failed campaign messages: why, and retry', () => {
+  async function campaignsWith(query: any, ccUpdate: any, campaign: any, cloudSvc?: WhatsappCloudService) {
+    const { CampaignsService } = await import('../modules/campaigns/campaigns.service');
+    const repo = { findOne: vi.fn(async () => campaign), update: vi.fn(async () => ({})) };
+    const ccRepo = { query, update: ccUpdate };
+    const templateRepo = { find: vi.fn(async () => []) };
+    const svc = new CampaignsService(repo as any, ccRepo as any, {} as any, templateRepo as any, {} as any, cloudSvc);
+    vi.spyOn(svc as any, 'findById').mockResolvedValue(campaign);
+    return { svc, repo };
+  }
+
+  it('groups failures by reason and adds the fix for known Meta errors', async () => {
+    const query = vi.fn(async () => [
+      { reason: '(#133010) Account not registered', count: 12, last_at: new Date('2026-11-01T05:00:00Z') },
+      { reason: 'Something else', count: '1', last_at: null },
+    ]);
+    const { svc } = await campaignsWith(query, vi.fn(), { id: 'c1', status: 'active' });
+    const res = await svc.failureSummary('c1');
+    expect(res.failed).toBe(13);
+    expect(res.reasons[0]).toMatchObject({ reason: '(#133010) Account not registered', count: 12 });
+    expect(res.reasons[0].hint).toMatch(/not registered with the Cloud API/);
+    expect(res.reasons[1].hint).toBeNull();
+  });
+
+  it('reopens a campaign that "completed" only because every send failed', async () => {
+    const ccUpdate = vi.fn(async () => ({ affected: 5 }));
+    const { svc, repo } = await campaignsWith(vi.fn(), ccUpdate, { id: 'c1', name: 'X', status: 'completed' });
+    await expect(svc.retryFailed('c1')).resolves.toEqual({ requeued: 5, status: 'active' });
+    expect(ccUpdate).toHaveBeenCalledWith({ campaign_id: 'c1', status: 'failed' }, { status: 'pending' });
+    expect(repo.update).toHaveBeenCalledWith('c1', { status: 'active' });
   });
 });
