@@ -152,7 +152,11 @@ export default function MetaTemplateFields({
 
               <Form.Item
                 name="cloud_template_params"
-                label="Values for {{1}}, {{2}}…"
+                label={
+                  selected?.bodyParamNames?.length
+                    ? `Values, in this order: ${selected.bodyParamNames.map((n) => `{{${n}}}`).join(', ')}`
+                    : 'Values for {{1}}, {{2}}…'
+                }
                 extra="In order. Merge fields are filled per contact."
                 style={{ marginBottom: 0 }}
               >

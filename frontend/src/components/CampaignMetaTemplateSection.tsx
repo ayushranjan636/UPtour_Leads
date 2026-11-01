@@ -173,7 +173,7 @@ export default function CampaignMetaTemplateSection({ form }: { form: FormInstan
             {chosen && chosen.bodyParamCount > 0 && (
               <Form.Item
                 name="meta_params"
-                label="Values for {{1}}, {{2}}… in order"
+                label={`Values, in this order: ${(chosen.bodyParamNames ?? []).map((n) => `{{${n}}}`).join(', ')}`}
                 style={{ marginBottom: 0 }}
               >
                 <Select mode="tags" options={MERGE_FIELDS.map((f) => ({ value: f, label: f }))} />

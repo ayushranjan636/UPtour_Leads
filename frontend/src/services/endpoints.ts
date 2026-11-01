@@ -608,6 +608,9 @@ export interface WhatsAppCloudTemplate {
   category: string;
   body: string | null;
   bodyParamCount: number;
+  /** Blank names in order: ['1','2'] or named ones like ['customer_name']. */
+  bodyParamNames?: string[];
+  parameterFormat?: 'POSITIONAL' | 'NAMED';
   headerFormat: string | null;
 }
 

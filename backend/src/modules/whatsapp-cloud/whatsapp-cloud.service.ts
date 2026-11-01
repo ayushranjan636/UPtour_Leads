@@ -102,6 +102,22 @@ export interface CloudTemplate {
   bodyParamCount: number;
   /** IMAGE / VIDEO / DOCUMENT / TEXT, or null when the template has no header. */
   headerFormat: string | null;
+  /**
+   * The blanks in order of first appearance: ['1', '2'] for a numbered template,
+   * ['customer_name', 'tour'] for a named one. Named blanks must be sent with their name.
+   */
+  bodyParamNames: string[];
+  /** POSITIONAL ({{1}}) or NAMED ({{customer_name}}). */
+  parameterFormat: 'POSITIONAL' | 'NAMED';
+}
+
+/** Blanks in a template body, in order of first appearance, without braces. */
+export function templateParamNames(text: string | null | undefined): string[] {
+  const seen: string[] = [];
+  for (const m of (text ?? '').matchAll(/\{\{\s*([\w]+)\s*\}\}/g)) {
+    if (!seen.includes(m[1])) seen.push(m[1]);
+  }
+  return seen;
 }
 
 /** Result of a send, in the same shape OpenWA returns so callers need no branching. */
@@ -511,7 +527,7 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
       const out: CloudTemplate[] = [];
       let url: string | null = `${GRAPH_BASE}/${cfg.apiVersion}/${cfg.wabaId}/message_templates`;
       let params: Record<string, unknown> | undefined = {
-        fields: 'name,language,status,category,components',
+        fields: 'name,language,status,category,components,parameter_format',
         limit: 100,
       };
       // Follow pagination; a busy account can have more than one page of templates.
@@ -525,17 +541,18 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
           const body = (t.components ?? []).find((c: any) => c.type === 'BODY');
           const header = (t.components ?? []).find((c: any) => c.type === 'HEADER');
           const bodyText: string | null = body?.text ?? null;
-          const placeholders = new Set(
-            (bodyText?.match(/\{\{\s*\w+\s*\}\}/g) ?? []).map((s) => s.replace(/\s/g, '')),
-          );
+          const names = templateParamNames(bodyText);
           out.push({
             name: t.name,
             language: t.language,
             status: t.status,
             category: t.category,
             body: bodyText,
-            bodyParamCount: placeholders.size,
+            bodyParamCount: names.length,
             headerFormat: header?.format ?? null,
+            bodyParamNames: names,
+            parameterFormat:
+              t.parameter_format === 'NAMED' || names.some((n) => !/^\d+$/.test(n)) ? 'NAMED' : 'POSITIONAL',
           });
         }
         url = resp.data?.paging?.next ?? null;
@@ -719,33 +736,68 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
    * `bodyParams` fill {{1}}, {{2}}… in order. A media header is attached when the
    * template has one and a public URL is supplied.
    */
-  sendTemplate(
+  /** Recently read template definitions, so a campaign burst does not list them per message. */
+  private templateCache: { at: number; list: CloudTemplate[] } | null = null;
+
+  /** The definition Meta holds for one template, or null when it cannot be read. */
+  async findTemplate(name: string, language: string): Promise<CloudTemplate | null> {
+    const fresh = this.templateCache && Date.now() - this.templateCache.at < 5 * 60_000;
+    let list = fresh ? this.templateCache!.list : null;
+    if (!list) {
+      list = await this.listTemplates().catch(() => null);
+      if (list) this.templateCache = { at: Date.now(), list };
+    }
+    if (!list) return null;
+    return (
+      list.find((t) => t.name === name && t.language === language) ??
+      list.find((t) => t.name === name) ??
+      null
+    );
+  }
+
+  /**
+   * Body parameters in the shape the template expects.
+   *
+   * Templates written in WhatsApp Manager can use named blanks ({{customer_name}}), and
+   * Meta then requires every value to carry `parameter_name`; sending them positionally
+   * fails with "(#100) Parameter name is missing or empty". The count is also matched to
+   * the template, because too many or too few values fail with #132000.
+   */
+  static shapeBodyParams(values: string[], def: CloudTemplate | null): any[] {
+    const clean = (v: string | undefined) => (v?.trim() ? v : '-');
+    if (!def) return values.map((text) => ({ type: 'text', text: clean(text) }));
+    const names = def.bodyParamNames ?? [];
+    const sized = names.map((_n, i) => values[i]);
+    if (def.parameterFormat === 'NAMED') {
+      return names.map((n, i) => ({ type: 'text', parameter_name: n, text: clean(sized[i]) }));
+    }
+    return sized.map((text) => ({ type: 'text', text: clean(text) }));
+  }
+
+  async sendTemplate(
     to: string,
     name: string,
     language: string,
     bodyParams: string[] = [],
     header?: { type: 'image' | 'video' | 'document'; link: string; filename?: string } | null,
   ) {
+    const def = await this.findTemplate(name, language || 'en');
     const components: any[] = [];
     if (header?.link) {
       const media: Record<string, string> = { link: header.link };
       if (header.type === 'document' && header.filename) media.filename = header.filename;
       components.push({ type: 'header', parameters: [{ type: header.type, [header.type]: media }] });
     }
-    if (bodyParams.length) {
-      components.push({
-        type: 'body',
-        // Meta rejects empty parameters, so a missing merge value becomes a placeholder
-        // dash rather than failing the whole send.
-        parameters: bodyParams.map((text) => ({ type: 'text', text: text?.trim() ? text : '-' })),
-      });
-    }
+    // Meta rejects empty values, so a missing merge value becomes a dash rather than
+    // failing the whole send.
+    const parameters = WhatsappCloudService.shapeBodyParams(bodyParams, def);
+    if (parameters.length) components.push({ type: 'body', parameters });
     return this.post({
       to: WhatsappCloudService.toRecipient(to),
       type: 'template',
       template: {
         name,
-        language: { code: language || 'en' },
+        language: { code: def?.language ?? (language || 'en') },
         ...(components.length ? { components } : {}),
       },
     });
