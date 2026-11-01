@@ -339,6 +339,8 @@ export interface CampaignSendStatus {
   failed: number;
   window: { start: string; end: string; timezone: string; open: boolean };
   nextSendAt: string | null;
+  /** Typical minutes between messages. */
+  gapMinutes?: number;
 }
 
 export const engineAPI = {

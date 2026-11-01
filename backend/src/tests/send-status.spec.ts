@@ -135,3 +135,17 @@ describe('AI keys from Settings', () => {
     expect((await again.saveKeys({ geminiKey: '-' })).active).toEqual([]);
   });
 });
+
+describe('Pacing shown to the operator', () => {
+  it('reports the typical gap: 100 a day over 09:00-18:00 is about one every 5 minutes', async () => {
+    const svc = makeDistributor(
+      { ...active, daily_send_limit: 100, send_window_start: '09:00', send_window_end: '18:00' },
+      someWaiting,
+    );
+    (svc as any).humanDelayMinMs = 45_000;
+    vi.spyOn(svc as any, 'isWithinSendWindow').mockReturnValue(true);
+    const s = await svc.getSendStatus('c1');
+    expect(s.gapMinutes).toBe(5);
+    expect(s.state).toBe('sending');
+  });
+});

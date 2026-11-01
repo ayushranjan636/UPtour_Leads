@@ -169,6 +169,8 @@ export interface SendStatus {
   failed: number;
   window: { start: string; end: string; timezone: string; open: boolean };
   nextSendAt: string | null;
+  /** Typical minutes between messages: the sending hours spread over the daily limit. */
+  gapMinutes: number;
 }
 
 @Injectable()
@@ -541,6 +543,7 @@ export class SendDistributorService {
       failed,
       window: { start, end, timezone, open: windowOpen },
       nextSendAt: gateMs && gateMs > Date.now() ? new Date(gateMs).toISOString() : null,
+      gapMinutes: Math.max(1, Math.round(this.calculateDelay(campaign, dailyLimit) / 60_000)),
     };
     const say = (state: SendStatus['state'], headline: string, detail: string): SendStatus => ({
       ...base,
@@ -590,7 +593,7 @@ export class SendDistributorService {
       return say(
         'sending',
         'Sending, with natural gaps',
-        'Messages go out one at a time with random pauses so the number looks human.',
+        `Messages go out one at a time, about every ${base.gapMinutes} minutes with random variation, so the number looks human. A failed message does not hold up the rest. Raise Messages per day for shorter gaps, or press Send now.`,
       );
     }
     return say('sending', 'Sending', `${pending} waiting. The next message goes out within a minute.`);
