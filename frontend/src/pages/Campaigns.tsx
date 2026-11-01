@@ -44,7 +44,16 @@ import DatasetFilter, {
   EMPTY_DATASET_FILTER,
   type DatasetFilterValue,
 } from '../components/DatasetFilter';
-import { campaignsAPI, contactsAPI } from '../services/endpoints';
+import { campaignsAPI, contactsAPI, whatsappCloudAPI } from '../services/endpoints';
+import CampaignMetaTemplateSection, {
+  buildMetaTemplatePayload,
+} from '../components/CampaignMetaTemplateSection';
+
+/** The server's explanation from an API error, which is what the operator needs to see. */
+function apiErrorText(err: unknown, fallback: string): string {
+  const msg = (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message;
+  return (Array.isArray(msg) ? msg.join(', ') : msg) || fallback;
+}
 import { color, font, radius, space } from '../theme/tokens';
 
 const { Text } = Typography;
@@ -77,6 +86,14 @@ interface Campaign {
 }
 
 export default function Campaigns() {
+  /** True while the official WhatsApp Cloud API sends; the create form then asks for a Meta template. */
+  const [cloudActive, setCloudActive] = useState(false);
+  useEffect(() => {
+    whatsappCloudAPI
+      .provider()
+      .then(({ data }) => setCloudActive(data.provider === 'cloud'))
+      .catch(() => setCloudActive(false));
+  }, []);
   const [data, setData] = useState<Campaign[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -238,6 +255,8 @@ export default function Campaigns() {
       if (wantsAudience) {
         payload.audience = audience;
       }
+      const metaTemplate = buildMetaTemplatePayload(values, cloudActive);
+      if (metaTemplate) payload.meta_template = metaTemplate;
       const { data: created } = await campaignsAPI.create(payload);
       // The create response carries the campaign, not the enrolment result, so the
       // enrolled count is read back from the campaign's contact list. Best-effort:
@@ -261,8 +280,13 @@ export default function Campaigns() {
       form.resetFields();
       resetAudience();
       fetchCampaigns();
-    } catch {
-      /* validation or API error */
+    } catch (err) {
+      // Form validation errors are already shown beside their fields. Anything else came
+      // from the server, and used to vanish here, so a refused create looked like a
+      // button that did nothing.
+      if (!(err as { errorFields?: unknown })?.errorFields) {
+        message.error(apiErrorText(err, 'The campaign could not be created.'), 8);
+      }
     } finally {
       setSaving(false);
     }
@@ -274,8 +298,8 @@ export default function Campaigns() {
       await campaignsAPI.activate(id);
       message.success('Campaign activated');
       fetchCampaigns();
-    } catch {
-      message.error('Failed to activate campaign');
+    } catch (err) {
+      message.error(apiErrorText(err, 'Failed to activate campaign'), 8);
     }
   };
 
@@ -348,6 +372,7 @@ export default function Campaigns() {
           audienceCount={audienceCount}
           countLoading={countLoading}
           hasAudience={hasAudience}
+          cloudActive={cloudActive}
         />
       </div>
     );
@@ -525,6 +550,7 @@ export default function Campaigns() {
         audienceCount={audienceCount}
         countLoading={countLoading}
         hasAudience={hasAudience}
+        cloudActive={cloudActive}
       />
     </div>
   );
@@ -544,6 +570,7 @@ function CampaignModal({
   audienceCount,
   countLoading,
   hasAudience,
+  cloudActive,
 }: {
   open: boolean;
   form: ReturnType<typeof Form.useForm>[0];
@@ -558,6 +585,7 @@ function CampaignModal({
   audienceCount: number | null;
   countLoading: boolean;
   hasAudience: boolean;
+  cloudActive: boolean;
 }) {
   // Live value so the "no opening message" warning appears and disappears as the
   // operator types, rather than only after a failed submit.
@@ -648,6 +676,8 @@ function CampaignModal({
             style={{ marginBottom: space.lg, borderRadius: radius.lg }}
           />
         )}
+
+        {cloudActive && <CampaignMetaTemplateSection form={form} />}
 
         {/* ── Audience ────────────────────────────────────
             Enrolling at creation time means a new campaign is not born empty and
@@ -762,7 +792,7 @@ function CampaignModal({
 
         <Flex gap={space.md}>
           <Form.Item name="daily_send_limit" label="Daily Send Limit" style={{ flex: 1 }}>
-            <InputNumber min={1} max={500} placeholder="100" style={{ width: '100%' }} />
+            <InputNumber min={1} max={200} placeholder="100" style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="send_window" label="Send Window" style={{ flex: 1 }}>
             <TimePicker.RangePicker

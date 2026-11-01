@@ -13,6 +13,7 @@ import { QueryContactDto } from '../contacts/dto/query-contact.dto';
 import { MessageTemplate } from '../../entities/message-template.entity';
 import { WhatsappCloudService } from '../whatsapp-cloud/whatsapp-cloud.service';
 import { isReplyTriggered, resolveTriggerCondition } from '../engine/trigger-conditions';
+import { metaTemplateName, toMetaTemplate } from '../whatsapp-cloud/meta-template.util';
 
 /** Shape returned by getSendPreview — the facts behind the "send" decision. */
 export interface SendPreview {
@@ -100,7 +101,12 @@ export class CampaignsService extends BaseService<Campaign> {
   ) { super(); }
 
   async createCampaign(dto: CreateCampaignDto, userId: string): Promise<Campaign> {
-    const { first_message, audience, ...campaignFields } = dto;
+    const { first_message, audience, meta_template, ...campaignFields } = dto;
+
+    // Resolve the Meta template before anything is saved. When Meta rejects the text,
+    // the operator gets Meta's reason and can fix the message, instead of ending up with
+    // a half-made campaign that can never send.
+    const metaFields = await this.resolveMetaTemplate(meta_template, first_message, dto);
 
     const campaign = await this.repo.save(
       this.repo.create({ ...campaignFields, created_by: userId, status: CampaignStatus.DRAFT }),
@@ -122,9 +128,22 @@ export class CampaignsService extends BaseService<Campaign> {
           body: first_message.trim(),
           sequence_order: 0,
           trigger_condition: 'initial',
+          ...metaFields,
         }),
       );
       this.logger.log(`Campaign ${campaign.name} created with an opening message`);
+    } else if (metaFields.cloud_template_name) {
+      // An approved template can stand in for a typed first message.
+      await this.templateRepo.save(
+        this.templateRepo.create({
+          campaign_id: campaign.id,
+          name: 'Opening message',
+          body: `[Meta template: ${metaFields.cloud_template_name}]`,
+          sequence_order: 0,
+          trigger_condition: 'initial',
+          ...metaFields,
+        }),
+      );
     }
 
     // Enrol the audience in the same request.
@@ -164,7 +183,19 @@ export class CampaignsService extends BaseService<Campaign> {
   }
 
   /** One-liner state transitions using the state machine */
-  async activate(id: string): Promise<Campaign> { return this.transitionTo(id, CampaignStatus.ACTIVE); }
+  /**
+   * Start sending, unless the official API would refuse every message.
+   *
+   * The review dialog already shows these problems, but the Activate button on the
+   * campaign list goes straight here. Without this check a campaign could run with an
+   * unapproved or missing Meta template and fail every send silently in the queue.
+   */
+  async activate(id: string): Promise<Campaign> {
+    const templates = await this.templateRepo.find({ where: { campaign_id: id } });
+    const blockers = await this.cloudTemplateBlockers(templates);
+    if (blockers.length) throw new BadRequestException(blockers.join(' '));
+    return this.transitionTo(id, CampaignStatus.ACTIVE);
+  }
   async pause(id: string): Promise<Campaign> { return this.transitionTo(id, CampaignStatus.PAUSED); }
 
   /**
@@ -482,17 +513,87 @@ export class CampaignsService extends BaseService<Campaign> {
    */
   private async cloudTemplateBlockers(templates: MessageTemplate[]): Promise<string[]> {
     if (!this.cloud || (await this.cloud.getProvider().catch(() => 'session')) !== 'cloud') return [];
-    return templates
+    const needsTemplate = templates.filter((t) => {
+      const condition = resolveTriggerCondition(t.trigger_condition).condition;
+      return !condition || !isReplyTriggered(condition);
+    });
+
+    const missing = needsTemplate
       .filter((t) => !t.cloud_template_name?.trim())
-      .filter((t) => {
-        const condition = resolveTriggerCondition(t.trigger_condition).condition;
-        return !condition || !isReplyTriggered(condition);
-      })
       .map(
         (t) =>
           `"${t.name}" needs an approved Meta template: the official WhatsApp API will not deliver ` +
-          'free text to someone who has not messaged you. Choose one under "WhatsApp Cloud API template".',
+          'free text to someone who has not messaged you. Press "Set Meta template" on that step.',
       );
+
+    // A chosen template must also be approved, or every send fails at Meta. When the
+    // list cannot be read (no WABA id, Meta down) this check is skipped rather than
+    // blocking a campaign on a guess.
+    const chosen = needsTemplate.filter((t) => t.cloud_template_name?.trim());
+    if (!chosen.length) return missing;
+    const onMeta = await this.cloud.listTemplates().catch(() => null);
+    if (!onMeta) return missing;
+    const notReady = chosen.flatMap((t) => {
+      const name = t.cloud_template_name!.trim();
+      const matches = onMeta.filter(
+        (m) => m.name === name && (!t.cloud_template_language || m.language === t.cloud_template_language),
+      );
+      if (!matches.length) {
+        return [`"${t.name}" uses Meta template "${name}", which is not on your WhatsApp account.`];
+      }
+      if (matches.some((m) => m.status === 'APPROVED')) return [];
+      const status = matches[0].status;
+      return [
+        status === 'REJECTED'
+          ? `Meta rejected template "${name}" for "${t.name}". Change the wording and create a new one.`
+          : `Template "${name}" for "${t.name}" is waiting for Meta's approval (${status.toLowerCase()}). ` +
+            'This usually takes a few minutes; refresh to check again.',
+      ];
+    });
+    return [...missing, ...notReady];
+  }
+
+  /**
+   * Fields to store on the opening step for the official API, creating the Meta template
+   * first when asked. Returns nothing when the QR session is in use.
+   */
+  private async resolveMetaTemplate(
+    choice: CreateCampaignDto['meta_template'],
+    firstMessage: string | undefined,
+    dto: CreateCampaignDto,
+  ): Promise<Partial<MessageTemplate>> {
+    if (!choice) return {};
+    if (!this.cloud) throw new BadRequestException('The WhatsApp Cloud API is not available.');
+
+    if (choice.mode === 'existing') {
+      if (!choice.name?.trim()) throw new BadRequestException('Choose an approved Meta template.');
+      return {
+        cloud_template_name: choice.name.trim(),
+        cloud_template_language: choice.language?.trim() || 'en',
+        cloud_template_params: choice.params ?? [],
+      };
+    }
+
+    if (!firstMessage?.trim()) {
+      throw new BadRequestException('Write the first message, so it can be sent to Meta as a template.');
+    }
+    const draft = toMetaTemplate(firstMessage, { product: dto.product, campaignName: dto.name });
+    if (draft.problems.length) throw new BadRequestException(draft.problems.join(' '));
+
+    const name = metaTemplateName(dto.name, Date.now().toString(36).slice(-5));
+    const created = await this.cloud.createTemplate({
+      name,
+      language: choice.language?.trim() || 'en',
+      category: choice.category ?? 'MARKETING',
+      body: draft.body,
+      examples: draft.examples,
+    });
+    this.logger.log(`Submitted Meta template ${created.name} for campaign ${dto.name} (${created.status})`);
+    return {
+      cloud_template_name: created.name,
+      cloud_template_language: choice.language?.trim() || 'en',
+      cloud_template_params: draft.params,
+    };
   }
 
   private async transitionTo(id: string, target: CampaignStatus): Promise<Campaign> {
