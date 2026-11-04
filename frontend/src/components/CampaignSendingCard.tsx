@@ -8,6 +8,7 @@ import {
   Form,
   InputNumber,
   Progress,
+  Radio,
   Row,
   Select,
   Space,
@@ -71,6 +72,8 @@ export default function CampaignSendingCard({
     send_window_start?: string;
     send_window_end?: string;
     send_window_timezone?: string;
+    min_gap_seconds?: number | null;
+    max_gap_seconds?: number | null;
   } | null;
   onChanged: () => void;
 }) {
@@ -105,6 +108,9 @@ export default function CampaignSendingCard({
         dayjs(String(campaign?.send_window_end ?? status?.window.end ?? '18:00').slice(0, 5), 'HH:mm'),
       ],
       send_window_timezone: campaign?.send_window_timezone ?? status?.window.timezone ?? 'Asia/Kolkata',
+      gap_mode: campaign?.min_gap_seconds ? 'custom' : 'auto',
+      gap_min: campaign?.min_gap_seconds ?? 60,
+      gap_max: campaign?.max_gap_seconds ?? campaign?.min_gap_seconds ?? 120,
     });
     setEditing(true);
   };
@@ -119,6 +125,9 @@ export default function CampaignSendingCard({
         send_window_start: v.hours?.[0]?.format('HH:mm'),
         send_window_end: v.hours?.[1]?.format('HH:mm'),
         send_window_timezone: v.send_window_timezone,
+        // null switches back to automatic spacing across the sending hours.
+        min_gap_seconds: v.gap_mode === 'custom' ? v.gap_min : null,
+        max_gap_seconds: v.gap_mode === 'custom' ? Math.max(v.gap_min, v.gap_max) : null,
       });
       message.success('Sending settings saved');
       setEditing(false);
@@ -166,7 +175,9 @@ export default function CampaignSendingCard({
             {status.state === 'sending' && status.nextSendAt && (
               <Text style={{ fontSize: font.size.footnote }}>
                 Next message at about <strong>{dayjs(status.nextSendAt).format('HH:mm')}</strong>
-                {status.gapMinutes ? ` · roughly one every ${status.gapMinutes} min` : ''}
+                {status.gapSeconds
+                  ? ` · roughly one every ${status.gapSeconds >= 120 ? `${Math.round(status.gapSeconds / 60)} min` : `${status.gapSeconds} sec`}${status.gapIsCustom ? ' (your setting)' : ''}`
+                  : ''}
               </Text>
             )}
           </Flex>
@@ -248,6 +259,37 @@ export default function CampaignSendingCard({
                   </Form.Item>
                 </Col>
               </Row>
+              <Form.Item label="Time between messages" style={{ marginBottom: space.sm }}>
+                <Flex gap={space.md} align="center" wrap>
+                  <Form.Item name="gap_mode" noStyle>
+                    <Radio.Group
+                      options={[
+                        { value: 'auto', label: 'Automatic (spread over the sending hours)' },
+                        { value: 'custom', label: 'I choose' },
+                      ]}
+                    />
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(a, b) => a.gap_mode !== b.gap_mode}>
+                    {({ getFieldValue }) =>
+                      getFieldValue('gap_mode') === 'custom' && (
+                        <Flex gap={space.sm} align="center" wrap>
+                          <Text style={{ fontSize: font.size.footnote }}>every</Text>
+                          <Form.Item name="gap_min" noStyle rules={[{ required: true }]}>
+                            <InputNumber min={5} max={86400} addonAfter="sec" style={{ width: 130 }} />
+                          </Form.Item>
+                          <Text style={{ fontSize: font.size.footnote }}>to</Text>
+                          <Form.Item name="gap_max" noStyle rules={[{ required: true }]}>
+                            <InputNumber min={5} max={86400} addonAfter="sec" style={{ width: 130 }} />
+                          </Form.Item>
+                          <Text style={{ fontSize: font.size.caption, color: color.textSecondary }}>
+                            Picked at random in this range. Daily limits still apply.
+                          </Text>
+                        </Flex>
+                      )
+                    }
+                  </Form.Item>
+                </Flex>
+              </Form.Item>
               {status.dailyLimit > 100 && (
                 <Alert
                   type="info"

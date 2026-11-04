@@ -8,6 +8,7 @@ import { CampaignsController } from './campaigns.controller';
 import { CampaignsService } from './campaigns.service';
 import { ContactsModule } from '../contacts/contacts.module';
 import { WhatsappCloudModule } from '../whatsapp-cloud/whatsapp-cloud.module';
+import { MediaModule } from '../media/media.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { WhatsappCloudModule } from '../whatsapp-cloud/whatsapp-cloud.module';
     ContactsModule,
     // Activation checks that each opening step has an approved Meta template.
     WhatsappCloudModule,
+    MediaModule,
   ],
   controllers: [CampaignsController],
   providers: [CampaignsService],

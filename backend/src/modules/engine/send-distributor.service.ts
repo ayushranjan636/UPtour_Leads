@@ -171,6 +171,9 @@ export interface SendStatus {
   nextSendAt: string | null;
   /** Typical minutes between messages: the sending hours spread over the daily limit. */
   gapMinutes: number;
+  /** Typical seconds between messages, and whether the operator chose them. */
+  gapSeconds: number;
+  gapIsCustom: boolean;
 }
 
 @Injectable()
@@ -327,9 +330,13 @@ export class SendDistributorService {
     if (!manual && gateMs !== null && Date.now() < gateMs) return 0;
 
     // 4. Calculate batch size for this cycle
+    const custom = this.customGapMs(campaign);
     const batchSize = manual
       ? Math.min(manual, dailyLimit - todaySent)
-      : this.calculateBatchSize(campaign, todaySent);
+      : custom
+        ? // A chosen pace: queue what fits in the next minute, spaced by that pace.
+          Math.min(dailyLimit - todaySent, Math.max(1, Math.floor(60_000 / ((custom.min + custom.max) / 2))))
+        : this.calculateBatchSize(campaign, todaySent);
     if (batchSize <= 0) return 0;
 
     // 4. Pick pending contacts
@@ -392,7 +399,7 @@ export class SendDistributorService {
       // First message of a cycle goes out promptly; every later one waits a freshly
       // drawn gap, so spacing within the batch is irregular by construction.
       if (queuedCount > 0) {
-        cumulativeDelay += this.humanizedGap(delayPerMessage);
+        cumulativeDelay += this.gapFor(campaign, delayPerMessage);
       }
       const delay = cumulativeDelay;
 
@@ -462,7 +469,7 @@ export class SendDistributorService {
       // batch is a single message and the within-batch randomisation cannot apply.
       await this.armNextSendGate(
         campaign,
-        cumulativeDelay + this.humanizedGap(delayPerMessage),
+        cumulativeDelay + this.gapFor(campaign, delayPerMessage),
       );
 
       this.logger.log(
@@ -544,6 +551,11 @@ export class SendDistributorService {
       window: { start, end, timezone, open: windowOpen },
       nextSendAt: gateMs && gateMs > Date.now() ? new Date(gateMs).toISOString() : null,
       gapMinutes: Math.max(1, Math.round(this.calculateDelay(campaign, dailyLimit) / 60_000)),
+      gapSeconds: (() => {
+        const c = this.customGapMs(campaign);
+        return Math.round((c ? (c.min + c.max) / 2 : this.calculateDelay(campaign, dailyLimit)) / 1000);
+      })(),
+      gapIsCustom: !!this.customGapMs(campaign),
     };
     const say = (state: SendStatus['state'], headline: string, detail: string): SendStatus => ({
       ...base,
@@ -593,7 +605,7 @@ export class SendDistributorService {
       return say(
         'sending',
         'Sending, with natural gaps',
-        `Messages go out one at a time, about every ${base.gapMinutes} minutes with random variation, so the number looks human. A failed message does not hold up the rest. Raise Messages per day for shorter gaps, or press Send now.`,
+        `Messages go out one at a time, about every ${base.gapSeconds >= 120 ? `${Math.round(base.gapSeconds / 60)} minutes` : `${base.gapSeconds} seconds`}${base.gapIsCustom ? ' (your setting)' : ', spread across the sending hours'}. A failed message does not hold up the rest. Change the gap under Limits & hours, or press Send now.`,
       );
     }
     return say('sending', 'Sending', `${pending} waiting. The next message goes out within a minute.`);
@@ -773,6 +785,21 @@ export class SendDistributorService {
    * Replaces a fixed `base + ±20%` jitter, which left the mean exactly on the base
    * and so still produced a detectable rhythm.
    */
+  /** The operator's chosen gap range in ms, or null for automatic spacing. */
+  private customGapMs(campaign: Campaign): { min: number; max: number } | null {
+    const min = Number(campaign.min_gap_seconds);
+    if (!Number.isFinite(min) || min <= 0) return null;
+    const max = Math.max(min, Number(campaign.max_gap_seconds) || min);
+    return { min: min * 1000, max: max * 1000 };
+  }
+
+  /** Next gap: random within the chosen range, or the automatic humanised gap. */
+  private gapFor(campaign: Campaign, pacingDelayMs: number): number {
+    const custom = this.customGapMs(campaign);
+    if (custom) return custom.min + Math.floor(Math.random() * (custom.max - custom.min + 1));
+    return this.humanizedGap(pacingDelayMs);
+  }
+
   private humanizedGap(pacingDelayMs: number): number {
     const min = this.humanDelayMinMs;
     const max = this.humanDelayMaxMs;

@@ -180,7 +180,8 @@ export class MessageSendProcessor extends WorkerHost {
           params,
           header,
         );
-        sentBody = `[template: ${activeTemplate.cloud_template_name}] ${renderedBody}`.trim();
+        // The text the recipient actually reads, so the conversation shows the message.
+        sentBody = openwaResult?.renderedBody || `[template: ${activeTemplate.cloud_template_name}] ${renderedBody}`.trim();
       } else if (viaCloud && !(await this.withinCustomerServiceWindow(contactId))) {
         // Meta refuses free-form messages outside the 24-hour window after the contact's
         // last message. Failing here names the fix instead of burning a send on an

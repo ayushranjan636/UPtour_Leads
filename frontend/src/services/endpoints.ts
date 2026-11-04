@@ -341,7 +341,29 @@ export interface CampaignSendStatus {
   nextSendAt: string | null;
   /** Typical minutes between messages. */
   gapMinutes?: number;
+  /** Typical seconds between messages, and whether the operator chose the pace. */
+  gapSeconds?: number;
+  gapIsCustom?: boolean;
 }
+
+/** A file uploaded for WhatsApp: its public link and what kind of media it is. */
+export interface UploadedMedia {
+  id: string;
+  url: string;
+  filename: string;
+  mime: string;
+  size: number;
+  kind: 'image' | 'video' | 'document';
+}
+
+export const mediaAPI = {
+  /** JPG/PNG up to 5 MB, MP4 up to 16 MB, PDF up to 16 MB. */
+  upload: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post<UploadedMedia>('/media', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
+};
 
 export const engineAPI = {
   sendStatus: (campaignId: string) =>
@@ -600,6 +622,8 @@ export interface WhatsAppCloudConfigInput {
   appSecret?: string;
   verifyToken?: string;
   apiVersion?: string;
+  /** Meta app id; only needed for templates with an image, video or PDF header. */
+  appId?: string;
 }
 
 /** An approved (or pending) template on the WhatsApp Business Account. */
@@ -624,6 +648,8 @@ export interface NewWhatsAppCloudTemplate {
   body: string;
   examples?: string[];
   headerText?: string;
+  /** Image, video or PDF header, from a file uploaded with mediaAPI. */
+  headerMedia?: { format: 'IMAGE' | 'VIDEO' | 'DOCUMENT'; mediaId: string };
   footer?: string;
   quickReplies?: string[];
 }

@@ -572,3 +572,86 @@ describe('Templates with named blanks ({{customer_name}})', () => {
     expect(WhatsappCloudService.shapeBodyParams(['a'], { bodyParamNames: [], parameterFormat: 'POSITIONAL' } as any)).toEqual([]);
   });
 });
+
+describe('Templates with an image header (made in WhatsApp Manager)', () => {
+  it('sends the template’s own header image, and records the text the recipient reads', async () => {
+    vi.spyOn(axios, 'get').mockImplementation(async (url: string) => {
+      if (url.startsWith('https://scontent')) {
+        return { data: new Uint8Array([1, 2, 3]).buffer, headers: { 'content-type': 'image/jpeg' } } as any;
+      }
+      return {
+        data: {
+          data: [
+            {
+              name: 'usa__new_york_',
+              language: 'en',
+              status: 'APPROVED',
+              category: 'MARKETING',
+              components: [
+                { type: 'HEADER', format: 'IMAGE', example: { header_handle: ['https://scontent.whatsapp.net/v/brochure.jpg'] } },
+                { type: 'BODY', text: 'Hello!\n\nGreetings from UP Heritages Tour, India.' },
+                { type: 'BUTTONS', buttons: [{ type: 'URL', text: 'Visit website', url: 'https://upheritagetours.com/' }] },
+              ],
+            },
+          ],
+        },
+      } as any;
+    });
+    post.mockImplementation(async (url: string) =>
+      url.endsWith('/media')
+        ? ({ data: { id: 'meta-media-1' } } as any)
+        : ({ data: { messages: [{ id: 'wamid.TEST' }] } } as any),
+    );
+
+    const { sender } = makeCloud();
+    const { proc, saved } = makeProcessor(sender, [
+      {
+        id: 't1',
+        name: 'Opening message',
+        type: 'text',
+        body: '[Meta template: usa__new_york_]',
+        sequence_order: 0,
+        cloud_template_name: 'usa__new_york_',
+        cloud_template_language: 'en',
+        cloud_template_params: [],
+      },
+    ]);
+    await proc.process(campaignJob);
+
+    // The sample image is uploaded to the number's media store once...
+    expect(post.mock.calls[0][0]).toBe(`https://graph.facebook.com/v23.0/${PNID}/media`);
+    // ...and the message carries it as the header. A static URL button needs nothing.
+    const message = post.mock.calls[1][1] as any;
+    expect(message.template.components).toEqual([
+      { type: 'header', parameters: [{ type: 'image', image: { id: 'meta-media-1' } }] },
+    ]);
+    expect(saved[0].body).toBe('Hello!\n\nGreetings from UP Heritages Tour, India.');
+  });
+
+  it('fills a URL button whose link ends in a blank', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        data: [
+          {
+            name: 'tour_link',
+            language: 'en',
+            status: 'APPROVED',
+            category: 'MARKETING',
+            components: [
+              { type: 'BODY', text: 'See our tours.' },
+              {
+                type: 'BUTTONS',
+                buttons: [{ type: 'URL', text: 'Open', url: 'https://x.com/t/{{1}}', example: ['https://x.com/t/kumbh'] }],
+              },
+            ],
+          },
+        ],
+      },
+    } as any);
+    const { sender } = makeCloud();
+    await sender.sendTemplate('cloud:1', '919876543210@c.us', 'tour_link', 'en', []);
+    expect((post.mock.calls[0][1] as any).template.components).toEqual([
+      { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: 'kumbh' }] },
+    ]);
+  });
+});

@@ -20,6 +20,8 @@ import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { whatsappCloudAPI } from '../services/endpoints';
 import type { NewWhatsAppCloudTemplate, WhatsAppCloudTemplate } from '../services/endpoints';
 import { color, font, radius, space } from '../theme/tokens';
+import MediaUpload from './MediaUpload';
+import type { MediaValue } from './MediaUpload';
 
 const { Text } = Typography;
 
@@ -64,7 +66,13 @@ export default function WhatsAppCloudTemplatesCard() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form] = Form.useForm<NewWhatsAppCloudTemplate & { examplesList?: string[] }>();
+  const [form] = Form.useForm<
+    NewWhatsAppCloudTemplate & {
+      examplesList?: string[];
+      headerType?: 'NONE' | 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT';
+      headerFile?: MediaValue | null;
+    }
+  >();
   const body = Form.useWatch('body', form) as string | undefined;
 
   /** How many {{n}} blanks the body has, so one sample box is shown per blank. */
@@ -100,7 +108,12 @@ export default function WhatsAppCloudTemplatesCard() {
         category: values.category,
         body: values.body,
         examples: (values.examplesList ?? []).slice(0, blankCount),
-        headerText: values.headerText,
+        headerText: values.headerType === 'TEXT' ? values.headerText : undefined,
+        headerMedia:
+          (values.headerType === 'IMAGE' || values.headerType === 'VIDEO' || values.headerType === 'DOCUMENT') &&
+          values.headerFile?.id
+            ? { format: values.headerType, mediaId: values.headerFile.id }
+            : undefined,
         footer: values.footer,
         quickReplies: values.quickReplies,
       });
@@ -212,7 +225,7 @@ export default function WhatsAppCloudTemplatesCard() {
           form={form}
           layout="vertical"
           preserve={false}
-          initialValues={{ language: 'en', category: 'MARKETING', quickReplies: [] }}
+          initialValues={{ language: 'en', category: 'MARKETING', quickReplies: [], headerType: 'NONE' }}
           style={{ marginTop: space.md }}
         >
           <Form.Item
@@ -239,8 +252,43 @@ export default function WhatsAppCloudTemplatesCard() {
               </Radio.Group>
             </Form.Item>
           </Flex>
-          <Form.Item name="headerText" label="Header (optional)">
-            <Input maxLength={60} placeholder="UP Heritage Tours" />
+          <Form.Item name="headerType" label="Header (optional)">
+            <Radio.Group
+              options={[
+                { value: 'NONE', label: 'None' },
+                { value: 'TEXT', label: 'Text' },
+                { value: 'IMAGE', label: 'Image' },
+                { value: 'VIDEO', label: 'Video' },
+                { value: 'DOCUMENT', label: 'PDF' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(a, b) => a.headerType !== b.headerType}>
+            {({ getFieldValue }) => {
+              const t = getFieldValue('headerType');
+              if (t === 'TEXT') {
+                return (
+                  <Form.Item name="headerText" rules={[{ required: true, message: 'Write the header' }]}>
+                    <Input maxLength={60} placeholder="UP Heritage Tours" />
+                  </Form.Item>
+                );
+              }
+              if (t === 'IMAGE' || t === 'VIDEO' || t === 'DOCUMENT') {
+                return (
+                  <Form.Item
+                    name="headerFile"
+                    rules={[{ required: true, message: 'Attach the file' }]}
+                    extra="Meta's reviewers see this file. Every message sends it as the header unless a campaign step attaches its own."
+                  >
+                    <MediaUpload
+                      kind={t === 'IMAGE' ? 'image' : t === 'VIDEO' ? 'video' : 'document'}
+                      label={`Attach ${t === 'DOCUMENT' ? 'PDF' : t.toLowerCase()}`}
+                    />
+                  </Form.Item>
+                );
+              }
+              return null;
+            }}
           </Form.Item>
           <Form.Item
             name="body"

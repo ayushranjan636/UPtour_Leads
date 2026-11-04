@@ -12,7 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ArrayMaxSize, IsArray, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsIn, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
 import { OpenwaService } from '../openwa/openwa.service';
 import { WhatsappCloudService, WhatsAppProvider } from './whatsapp-cloud.service';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -25,6 +25,7 @@ class SaveCloudConfigDto {
   @IsOptional() @IsString() @MaxLength(200) appSecret?: string;
   @IsOptional() @IsString() @MaxLength(200) verifyToken?: string;
   @IsOptional() @IsString() @MaxLength(10) apiVersion?: string;
+  @IsOptional() @IsString() @MaxLength(40) appId?: string;
 }
 
 class CreateCloudTemplateDto {
@@ -34,6 +35,7 @@ class CreateCloudTemplateDto {
   @IsString() @MaxLength(1024) body: string;
   @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) examples?: string[];
   @IsOptional() @IsString() @MaxLength(60) headerText?: string;
+  @IsOptional() @IsObject() headerMedia?: { format: 'IMAGE' | 'VIDEO' | 'DOCUMENT'; mediaId: string };
   @IsOptional() @IsString() @MaxLength(60) footer?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(3) @IsString({ each: true }) quickReplies?: string[];
 }
