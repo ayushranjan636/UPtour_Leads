@@ -12,7 +12,19 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ArrayMaxSize, IsArray, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { OpenwaService } from '../openwa/openwa.service';
 import { WhatsappCloudService, WhatsAppProvider } from './whatsapp-cloud.service';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -25,6 +37,22 @@ class SaveCloudConfigDto {
   @IsOptional() @IsString() @MaxLength(200) appSecret?: string;
   @IsOptional() @IsString() @MaxLength(200) verifyToken?: string;
   @IsOptional() @IsString() @MaxLength(10) apiVersion?: string;
+  @IsOptional() @IsString() @MaxLength(40) appId?: string;
+}
+
+class TemplateButtonDto {
+  @IsIn(['QUICK_REPLY', 'URL', 'PHONE_NUMBER', 'COPY_CODE']) type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE';
+  @IsOptional() @IsString() @MaxLength(25) text?: string;
+  @IsOptional() @IsString() @MaxLength(2000) url?: string;
+  @IsOptional() @IsString() @MaxLength(200) example?: string;
+  @IsOptional() @IsString() @MaxLength(20) phone?: string;
+}
+
+class BusinessLocationDto {
+  @IsNumber() latitude: number;
+  @IsNumber() longitude: number;
+  @IsOptional() @IsString() @MaxLength(100) name?: string;
+  @IsOptional() @IsString() @MaxLength(300) address?: string;
 }
 
 class CreateCloudTemplateDto {
@@ -34,8 +62,13 @@ class CreateCloudTemplateDto {
   @IsString() @MaxLength(1024) body: string;
   @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) examples?: string[];
   @IsOptional() @IsString() @MaxLength(60) headerText?: string;
+  @IsOptional() @IsObject() headerMedia?: { format: 'IMAGE' | 'VIDEO' | 'DOCUMENT'; mediaId: string };
   @IsOptional() @IsString() @MaxLength(60) footer?: string;
-  @IsOptional() @IsArray() @ArrayMaxSize(3) @IsString({ each: true }) quickReplies?: string[];
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) quickReplies?: string[];
+  @IsOptional() @IsString() @MaxLength(60) headerTextExample?: string;
+  @IsOptional() @IsBoolean() headerLocation?: boolean;
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => TemplateButtonDto)
+  buttons?: TemplateButtonDto[];
 }
 
 class RegisterNumberDto {
@@ -162,6 +195,19 @@ export class WhatsappCloudController {
   })
   registerWebhook() {
     return this.cloud.registerWebhook();
+  }
+
+  @Get('cloud/location')
+  @ApiOperation({ summary: 'Business location shown by templates with a location header' })
+  getLocation() {
+    return this.cloud.getBusinessLocation();
+  }
+
+  @Put('cloud/location')
+  @Roles('admin')
+  @ApiOperation({ summary: 'Save the business location used by location-header templates' })
+  saveLocation(@Body() dto: BusinessLocationDto) {
+    return this.cloud.saveBusinessLocation(dto);
   }
 
   @Post('cloud/register')

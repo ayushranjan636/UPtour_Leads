@@ -25,6 +25,7 @@ import {
 import { whatsappCloudAPI } from '../services/endpoints';
 import WhatsAppCloudTestCard from './WhatsAppCloudTestCard';
 import WhatsAppCloudTemplatesCard from './WhatsAppCloudTemplatesCard';
+import BusinessLocationCard from './BusinessLocationCard';
 import type {
   WhatsAppCloudConfigInput,
   WhatsAppProvider,
@@ -411,6 +412,14 @@ export default function WhatsAppCloudPanel({ onProviderChanged }: { onProviderCh
                   <Input placeholder="v23.0" />
                 </Form.Item>
               </Flex>
+              <Form.Item
+                name="appId"
+                label="App ID (optional)"
+                extra="Meta app → App settings → Basic. Only needed to create templates with an image, video or PDF header, and only if the portal cannot find it from the token."
+                rules={[{ pattern: /^\d*$/, message: 'Digits only' }]}
+              >
+                <Input placeholder="1234567890123456" />
+              </Form.Item>
             </Form>
           )}
 
@@ -449,6 +458,8 @@ export default function WhatsAppCloudPanel({ onProviderChanged }: { onProviderCh
       {cloud.connected && <WhatsAppCloudTestCard />}
 
       {cloud.connected && <WhatsAppCloudTemplatesCard />}
+
+      {cloud.connected && <BusinessLocationCard />}
 
       {/* ── Webhook setup ─────────────────────────────────── */}
       <Card size="small" style={{ borderRadius: radius.lg }}>

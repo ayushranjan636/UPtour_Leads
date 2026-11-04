@@ -6,6 +6,7 @@ import {
   Logger,
   OnApplicationBootstrap,
   OnModuleInit,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -13,6 +14,8 @@ import { DataSource } from 'typeorm';
 import axios, { AxiosError } from 'axios';
 import { randomBytes } from 'crypto';
 import { metaErrorHint } from './meta-errors';
+import { publicApiBase } from '../../common/utils/public-url.util';
+import { MediaService } from '../media/media.service';
 
 /** Which transport carries WhatsApp traffic. */
 export type WhatsAppProvider = 'session' | 'cloud';
@@ -42,6 +45,11 @@ export interface CloudConfig {
   /** Shared string Meta echoes back when the webhook URL is first verified. */
   verifyToken: string;
   apiVersion: string;
+  /**
+   * Meta app id. Only needed to upload the sample image of a template with a media
+   * header; found from the token automatically when left blank.
+   */
+  appId?: string;
 }
 
 /** What the portal shows about the Cloud API link. Never contains secrets. */
@@ -86,9 +94,38 @@ export interface NewCloudTemplate {
   /** One sample value per placeholder, which Meta's reviewers read. */
   examples?: string[];
   headerText?: string;
+  /** Sample for a {{1}} in the text header, which Meta's reviewers read. */
+  headerTextExample?: string;
+  /** Location header: each message shows a map pin, set per send. */
+  headerLocation?: boolean;
+  /** Buttons of any type Meta allows. Supersedes quickReplies. */
+  buttons?: NewTemplateButton[];
+  /** Image, video or PDF header, from a file uploaded to the portal. */
+  headerMedia?: { format: 'IMAGE' | 'VIDEO' | 'DOCUMENT'; mediaId: string };
   footer?: string;
   /** Quick-reply button labels, at most three. */
   quickReplies?: string[];
+}
+
+/** One template button. Meta allows up to 10: quick replies, 2 URL, 1 phone, 1 copy code. */
+export interface NewTemplateButton {
+  type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE';
+  /** Label on the button (not used by COPY_CODE, whose label Meta sets). Max 25 characters. */
+  text?: string;
+  /** URL buttons. May end in {{1}} for a per-message suffix. */
+  url?: string;
+  /** For a URL ending in {{1}}: an example suffix. For COPY_CODE: an example code. */
+  example?: string;
+  /** PHONE_NUMBER buttons, with country code, e.g. +919876543210. */
+  phone?: string;
+}
+
+/** A button as the portal shows it on a template. */
+export interface CloudTemplateButton {
+  type: string;
+  text: string;
+  url?: string;
+  phone?: string;
 }
 
 export interface CloudTemplate {
@@ -109,6 +146,19 @@ export interface CloudTemplate {
   bodyParamNames: string[];
   /** POSITIONAL ({{1}}) or NAMED ({{customer_name}}). */
   parameterFormat: 'POSITIONAL' | 'NAMED';
+  /** The sample file uploaded with a media header, as Meta stores it. */
+  headerExampleUrl?: string | null;
+  /** Text of a TEXT header, if any. */
+  headerText?: string | null;
+  /** URL buttons whose link ends in a {{1}} blank, which each send must fill. */
+  dynamicUrlButtons?: { index: number; example: string | null }[];
+  /** Example for a {{1}} in the text header; each send must fill it. */
+  headerTextExample?: string | null;
+  /** Copy-code buttons, which each send must give a code. */
+  copyCodeButtons?: { index: number; example: string | null }[];
+  /** All buttons, for display. */
+  buttons?: CloudTemplateButton[];
+  footer?: string | null;
 }
 
 /** Blanks in a template body, in order of first appearance, without braces. */
@@ -160,6 +210,8 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
   constructor(
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
+    // Optional so tests can build the service without storage.
+    @Optional() private readonly media?: MediaService,
   ) {}
 
   /**
@@ -181,6 +233,8 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
       `ALTER TABLE IF EXISTS message_templates ADD COLUMN IF NOT EXISTS cloud_template_params text NULL`,
       // Not Cloud API specific, but this is the one place schema patches run on boot.
       `ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS daily_new_contact_limit int NULL`,
+      `ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS min_gap_seconds int NULL`,
+      `ALTER TABLE IF EXISTS campaigns ADD COLUMN IF NOT EXISTS max_gap_seconds int NULL`,
     ];
     for (const sql of statements) {
       try {
@@ -309,19 +363,7 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
   webhookUrl(): string {
     const explicit = this.config.get<string>('WA_CLOUD_WEBHOOK_URL')?.trim();
     if (explicit) return explicit;
-    const strip = (s: string) => s.trim().replace(/\/+$/, '');
-    const publicApi = this.config.get<string>('PUBLIC_API_URL')?.trim();
-    const frontend = this.config.get<string>('FRONTEND_URL')?.trim();
-    const appUrl = this.config.get<string>('APP_URL')?.trim() || 'http://localhost:3000';
-    // In production the portal origin proxies /api (Caddy). A local Vite dev server does
-    // not, so a localhost frontend URL would produce a callback that 404s.
-    const frontendProxiesApi = !!frontend && !/^https?:\/\/(localhost|127\.)/.test(frontend);
-    const base = publicApi
-      ? strip(publicApi)
-      : frontendProxiesApi
-        ? `${strip(frontend!)}/api`
-        : `${strip(appUrl)}/api`;
-    return `${base}/webhooks/whatsapp-cloud`;
+    return `${publicApiBase(this.config)}/webhooks/whatsapp-cloud`;
   }
 
   /**
@@ -343,6 +385,7 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
       appSecret: pick(input.appSecret, previous?.appSecret),
       verifyToken: pick(input.verifyToken, previous?.verifyToken) || randomBytes(16).toString('hex'),
       apiVersion: pick(input.apiVersion, previous?.apiVersion) || DEFAULT_API_VERSION,
+      appId: pick(input.appId, previous?.appId) || undefined,
     };
 
     if (!next.accessToken) throw new BadRequestException('Access token is required.');
@@ -553,6 +596,30 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
             bodyParamNames: names,
             parameterFormat:
               t.parameter_format === 'NAMED' || names.some((n) => !/^\d+$/.test(n)) ? 'NAMED' : 'POSITIONAL',
+            headerExampleUrl: header?.example?.header_handle?.[0] ?? header?.example?.header_url?.[0] ?? null,
+            headerText: header?.format === 'TEXT' ? (header?.text ?? null) : null,
+            headerTextExample: header?.example?.header_text?.[0] ?? null,
+            footer: (t.components ?? []).find((c: any) => c.type === 'FOOTER')?.text ?? null,
+            buttons: ((t.components ?? []).find((c: any) => c.type === 'BUTTONS')?.buttons ?? []).map((b: any) => ({
+              type: b.type,
+              text: b.text ?? (b.type === 'COPY_CODE' ? 'Copy offer code' : ''),
+              url: b.url,
+              phone: b.phone_number,
+            })),
+            copyCodeButtons: ((t.components ?? []).find((c: any) => c.type === 'BUTTONS')?.buttons ?? [])
+              .map((b: any, index: number) => ({ b, index }))
+              .filter(({ b }: any) => b?.type === 'COPY_CODE')
+              .map(({ b, index }: any) => ({ index, example: (Array.isArray(b.example) ? b.example[0] : b.example) ?? null })),
+            dynamicUrlButtons: ((t.components ?? []).find((c: any) => c.type === 'BUTTONS')?.buttons ?? [])
+              .map((b: any, index: number) => ({ b, index }))
+              .filter(({ b }: any) => b?.type === 'URL' && /\{\{\s*\w+\s*\}\}/.test(b?.url ?? ''))
+              .map(({ b, index }: any) => {
+                // Meta stores the example as the full URL; the parameter is only the part
+                // that replaces the blank, i.e. what follows the fixed prefix.
+                const prefix = String(b.url).split(/\{\{/)[0];
+                const ex: string | undefined = b.example?.[0];
+                return { index, example: ex ? (ex.startsWith(prefix) ? ex.slice(prefix.length) : ex) : null };
+              }),
           });
         }
         url = resp.data?.paging?.next ?? null;
@@ -599,17 +666,32 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
     }
 
     const components: any[] = [];
-    if (input.headerText?.trim()) components.push({ type: 'HEADER', format: 'TEXT', text: input.headerText.trim() });
+    if (input.headerMedia?.mediaId) {
+      const handle = await this.uploadSampleForTemplate(cfg, input.headerMedia.mediaId);
+      components.push({ type: 'HEADER', format: input.headerMedia.format, example: { header_handle: [handle] } });
+    } else if (input.headerLocation) {
+      components.push({ type: 'HEADER', format: 'LOCATION' });
+    } else if (input.headerText?.trim()) {
+      const text = input.headerText.trim();
+      const hasBlank = /\{\{\s*1\s*\}\}/.test(text);
+      if (hasBlank && !input.headerTextExample?.trim()) {
+        throw new BadRequestException('Give a sample value for the {{1}} in the header.');
+      }
+      components.push({
+        type: 'HEADER',
+        format: 'TEXT',
+        text,
+        ...(hasBlank ? { example: { header_text: [input.headerTextExample!.trim()] } } : {}),
+      });
+    }
     components.push({
       type: 'BODY',
       text: body,
       ...(used.length ? { example: { body_text: [examples.slice(0, used.length)] } } : {}),
     });
     if (input.footer?.trim()) components.push({ type: 'FOOTER', text: input.footer.trim() });
-    const replies = (input.quickReplies ?? []).map((r) => r?.trim()).filter(Boolean).slice(0, 3);
-    if (replies.length) {
-      components.push({ type: 'BUTTONS', buttons: replies.map((text) => ({ type: 'QUICK_REPLY', text })) });
-    }
+    const buttons = WhatsappCloudService.buildButtons(input);
+    if (buttons.length) components.push({ type: 'BUTTONS', buttons });
 
     try {
       const { data } = await axios.post(
@@ -621,6 +703,114 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
       return { id: data?.id, status: data?.status ?? 'PENDING', name };
     } catch (err) {
       throw new BadRequestException(`Meta rejected the template: ${this.describeError(err)}`);
+    }
+  }
+
+  /**
+   * Template buttons in Meta's shape, checked against Meta's limits first so the
+   * operator gets the reason in plain words instead of a rejection code.
+   */
+  static buildButtons(input: { buttons?: NewTemplateButton[]; quickReplies?: string[] }): any[] {
+    const list: NewTemplateButton[] = [
+      ...(input.buttons ?? []),
+      ...(input.quickReplies ?? []).filter((r) => r?.trim()).map((text) => ({ type: 'QUICK_REPLY' as const, text })),
+    ];
+    if (list.length > 10) throw new BadRequestException('Meta allows at most 10 buttons on a template.');
+    const count = (t: string) => list.filter((b) => b.type === t).length;
+    if (count('URL') > 2) throw new BadRequestException('Meta allows at most 2 website buttons.');
+    if (count('PHONE_NUMBER') > 1) throw new BadRequestException('Meta allows 1 call button.');
+    if (count('COPY_CODE') > 1) throw new BadRequestException('Meta allows 1 copy-code button.');
+
+    // Meta requires quick replies to be grouped together, before or after the others.
+    const ordered = [...list.filter((b) => b.type === 'QUICK_REPLY'), ...list.filter((b) => b.type !== 'QUICK_REPLY')];
+    return ordered.map((b) => {
+      const text = b.text?.trim() ?? '';
+      if (b.type !== 'COPY_CODE' && !text) throw new BadRequestException('Every button needs a label.');
+      if (text.length > 25) throw new BadRequestException(`Button label "${text}" is longer than 25 characters.`);
+      switch (b.type) {
+        case 'QUICK_REPLY':
+          return { type: 'QUICK_REPLY', text };
+        case 'URL': {
+          const url = b.url?.trim() ?? '';
+          if (!/^https?:\/\//.test(url)) throw new BadRequestException(`Website button "${text}" needs a full link starting with https://`);
+          const blank = /\{\{\s*1\s*\}\}/.test(url);
+          if (blank && !/\{\{\s*1\s*\}\}$/.test(url)) {
+            throw new BadRequestException('In a website link, {{1}} can only be at the very end.');
+          }
+          if (blank && !b.example?.trim()) {
+            throw new BadRequestException(`Give an example ending for the {{1}} in "${text}".`);
+          }
+          return {
+            type: 'URL',
+            text,
+            url,
+            ...(blank ? { example: [url.replace(/\{\{\s*1\s*\}\}$/, b.example!.trim())] } : {}),
+          };
+        }
+        case 'PHONE_NUMBER': {
+          const phone = (b.phone ?? '').replace(/[^\d+]/g, '');
+          if (!/^\+?\d{8,15}$/.test(phone)) throw new BadRequestException(`Call button "${text}" needs a phone number with country code.`);
+          return { type: 'PHONE_NUMBER', text, phone_number: phone.startsWith('+') ? phone : `+${phone}` };
+        }
+        case 'COPY_CODE': {
+          const code = b.example?.trim();
+          if (!code || code.length > 15) throw new BadRequestException('A copy-code button needs an example code of up to 15 characters.');
+          return { type: 'COPY_CODE', example: code };
+        }
+        default:
+          throw new BadRequestException(`Unknown button type ${(b as any).type}`);
+      }
+    });
+  }
+
+  /** The Meta app the token belongs to, from the saved App ID or the token itself. */
+  private async resolveAppId(cfg: CloudConfig): Promise<string> {
+    if (cfg.appId?.trim()) return cfg.appId.trim();
+    try {
+      const { data } = await axios.get(`${GRAPH_BASE}/${cfg.apiVersion}/debug_token`, {
+        params: { input_token: cfg.accessToken, access_token: cfg.accessToken },
+        timeout: 15_000,
+      });
+      const appId = data?.data?.app_id;
+      if (appId) return String(appId);
+    } catch {
+      /* fall through to the explanation below */
+    }
+    throw new BadRequestException(
+      'Meta needs your App ID to upload the template image. Add it under Settings → WhatsApp → Edit credentials (Meta app → App settings → Basic → App ID).',
+    );
+  }
+
+  /**
+   * Upload a sample of the header media through Meta's Resumable Upload API.
+   *
+   * A template with an image, video or PDF header must include an example file for
+   * Meta's reviewers, given as an upload handle rather than a link.
+   */
+  private async uploadSampleForTemplate(cfg: CloudConfig, mediaId: string): Promise<string> {
+    if (!this.media) throw new BadRequestException('File storage is unavailable.');
+    const file = await this.media.get(mediaId);
+    const appId = await this.resolveAppId(cfg);
+    try {
+      const session = await axios.post(`${GRAPH_BASE}/${cfg.apiVersion}/${appId}/uploads`, null, {
+        params: { file_name: file.filename, file_length: file.data.length, file_type: file.mime },
+        headers: { Authorization: `Bearer ${cfg.accessToken}` },
+        timeout: 20_000,
+      });
+      const uploadId: string = session.data?.id;
+      const { data } = await axios.post(`${GRAPH_BASE}/${cfg.apiVersion}/${uploadId}`, file.data, {
+        headers: {
+          Authorization: `OAuth ${cfg.accessToken}`,
+          file_offset: '0',
+          'Content-Type': 'application/octet-stream',
+        },
+        maxBodyLength: Infinity,
+        timeout: 60_000,
+      });
+      if (!data?.h) throw new Error('Meta returned no upload handle');
+      return data.h as string;
+    } catch (err) {
+      throw new BadRequestException(`Meta did not accept the template image: ${this.describeError(err)}`);
     }
   }
 
@@ -783,7 +973,17 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
   ) {
     const def = await this.findTemplate(name, language || 'en');
     const components: any[] = [];
-    if (header?.link) {
+    const mediaHeader = !!def?.headerFormat && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(def.headerFormat);
+    // Meta does not reuse the sample uploaded with the template: every send of a template
+    // with an image, video or PDF header must include one, or Meta rejects it. When the
+    // campaign step has no file of its own, send the template's own sample.
+    if (def && mediaHeader && !header?.link) {
+      const kind = def.headerFormat!.toLowerCase() as 'image' | 'video' | 'document';
+      const mediaId = await this.templateHeaderMediaId(def);
+      components.push({ type: 'header', parameters: [{ type: kind, [kind]: { id: mediaId } }] });
+    }
+    // A header sent to a template without one fails with #132012, so it is dropped.
+    if (header?.link && (!def || mediaHeader)) {
       const media: Record<string, string> = { link: header.link };
       if (header.type === 'document' && header.filename) media.filename = header.filename;
       components.push({ type: 'header', parameters: [{ type: header.type, [header.type]: media }] });
@@ -792,7 +992,31 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
     // failing the whole send.
     const parameters = WhatsappCloudService.shapeBodyParams(bodyParams, def);
     if (parameters.length) components.push({ type: 'body', parameters });
-    return this.post({
+    if (def?.headerFormat === 'TEXT' && def.headerText && /\{\{\s*\w+\s*\}\}/.test(def.headerText)) {
+      // The header blank takes the template's sample, e.g. a destination or offer name.
+      components.unshift({ type: 'header', parameters: [{ type: 'text', text: def.headerTextExample || bodyParams[0] || '-' }] });
+    }
+    if (def?.headerFormat === 'LOCATION') {
+      const loc = await this.businessLocation();
+      components.unshift({ type: 'header', parameters: [{ type: 'location', location: loc }] });
+    }
+    for (const btn of def?.copyCodeButtons ?? []) {
+      components.push({
+        type: 'button',
+        sub_type: 'copy_code',
+        index: String(btn.index),
+        parameters: [{ type: 'coupon_code', coupon_code: btn.example || 'OFFER' }],
+      });
+    }
+    for (const btn of def?.dynamicUrlButtons ?? []) {
+      components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: String(btn.index),
+        parameters: [{ type: 'text', text: btn.example || '-' }],
+      });
+    }
+    const result = await this.post({
       to: WhatsappCloudService.toRecipient(to),
       type: 'template',
       template: {
@@ -801,6 +1025,103 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
         ...(components.length ? { components } : {}),
       },
     });
+    return { ...result, renderedBody: WhatsappCloudService.renderTemplateText(def, bodyParams) };
+  }
+
+  /** The text the recipient reads, so the conversation shows the message, not its name. */
+  static renderTemplateText(def: CloudTemplate | null, values: string[]): string | null {
+    if (!def?.body) return null;
+    const names = def.bodyParamNames ?? [];
+    const body = def.body.replace(/\{\{\s*(\w+)\s*\}\}/g, (_m, n) => {
+      const i = names.indexOf(n);
+      return (i >= 0 && values[i]?.trim()) || '-';
+    });
+    return [def.headerText, body].filter(Boolean).join('\n\n');
+  }
+
+  /** The pin shown by templates with a location header. Saved from Settings. */
+  async businessLocation(): Promise<{ latitude: number; longitude: number; name?: string; address?: string }> {
+    const loc = await this.readSetting<{ latitude: number; longitude: number; name?: string; address?: string }>(
+      'whatsapp.location',
+    );
+    if (!loc || !Number.isFinite(Number(loc.latitude)) || !Number.isFinite(Number(loc.longitude))) {
+      throw new BadRequestException(
+        'This template shows a location. Set your business location under Settings → WhatsApp → Business location first.',
+      );
+    }
+    return { ...loc, latitude: Number(loc.latitude), longitude: Number(loc.longitude) };
+  }
+
+  async getBusinessLocation() {
+    return this.readSetting<{ latitude: number; longitude: number; name?: string; address?: string }>('whatsapp.location');
+  }
+
+  async saveBusinessLocation(loc: { latitude: number; longitude: number; name?: string; address?: string }) {
+    const lat = Number(loc.latitude);
+    const lng = Number(loc.longitude);
+    if (!(lat >= -90 && lat <= 90) || !(lng >= -180 && lng <= 180)) {
+      throw new BadRequestException('Latitude must be -90 to 90 and longitude -180 to 180.');
+    }
+    const value = { latitude: lat, longitude: lng, name: loc.name?.trim() || undefined, address: loc.address?.trim() || undefined };
+    await this.writeSetting('whatsapp.location', value);
+    return value;
+  }
+
+  /** Uploaded copies of template header samples: Meta media ids last 30 days, kept 25. */
+  private headerMediaCache = new Map<string, { id: string; at: number }>();
+
+  /**
+   * A Meta media id for a template's own header sample.
+   *
+   * The sample lives on Meta's CDN behind a signed link that expires, so it is fetched
+   * and re-uploaded to this number's media store. Sending by id then works without the
+   * portal needing a public address, and the id is reused for 25 days.
+   */
+  private async templateHeaderMediaId(def: CloudTemplate): Promise<string> {
+    const key = `${def.name}|${def.language}`;
+    const cached = this.headerMediaCache.get(key);
+    if (cached && Date.now() - cached.at < 25 * 24 * 3600_000) return cached.id;
+
+    const cfg = await this.requireConfig();
+    if (!def.headerExampleUrl) {
+      throw new BadRequestException(
+        `Template "${def.name}" has a ${def.headerFormat?.toLowerCase()} header but Meta returned no sample to send. Attach the file to the campaign step.`,
+      );
+    }
+    let bytes: Buffer;
+    let mime: string;
+    try {
+      const res = await axios.get(def.headerExampleUrl, { responseType: 'arraybuffer', timeout: 30_000 });
+      bytes = Buffer.from(res.data);
+      mime = String(res.headers['content-type'] || '').split(';')[0] ||
+        (def.headerFormat === 'IMAGE' ? 'image/jpeg' : def.headerFormat === 'VIDEO' ? 'video/mp4' : 'application/pdf');
+    } catch (err) {
+      throw new BadRequestException(
+        `Could not fetch the header ${def.headerFormat?.toLowerCase()} of template "${def.name}" from Meta: ${this.describeError(err)}. Attach the file to the campaign step instead.`,
+      );
+    }
+    const id = await this.uploadToMeta(cfg, bytes, mime, `${def.name}.${mime.split('/')[1] || 'bin'}`);
+    this.headerMediaCache.set(key, { id, at: Date.now() });
+    return id;
+  }
+
+  /** Upload a file to this phone number's media store; returns its media id. */
+  private async uploadToMeta(cfg: CloudConfig, bytes: Buffer, mime: string, filename: string): Promise<string> {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', mime);
+    form.append('file', new Blob([new Uint8Array(bytes)], { type: mime }), filename);
+    try {
+      const { data } = await axios.post(`${GRAPH_BASE}/${cfg.apiVersion}/${cfg.phoneNumberId}/media`, form, {
+        headers: { Authorization: `Bearer ${cfg.accessToken}` },
+        maxBodyLength: Infinity,
+        timeout: 60_000,
+      });
+      if (!data?.id) throw new Error('Meta returned no media id');
+      return String(data.id);
+    } catch (err) {
+      throw new BadRequestException(`Meta did not accept the header file: ${this.describeError(err)}`);
+    }
   }
 
   /** Readable one-line cause; Graph errors put the useful text in error.error_data. */

@@ -341,7 +341,29 @@ export interface CampaignSendStatus {
   nextSendAt: string | null;
   /** Typical minutes between messages. */
   gapMinutes?: number;
+  /** Typical seconds between messages, and whether the operator chose the pace. */
+  gapSeconds?: number;
+  gapIsCustom?: boolean;
 }
+
+/** A file uploaded for WhatsApp: its public link and what kind of media it is. */
+export interface UploadedMedia {
+  id: string;
+  url: string;
+  filename: string;
+  mime: string;
+  size: number;
+  kind: 'image' | 'video' | 'document';
+}
+
+export const mediaAPI = {
+  /** JPG/PNG up to 5 MB, MP4 up to 16 MB, PDF up to 16 MB. */
+  upload: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post<UploadedMedia>('/media', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
+};
 
 export const engineAPI = {
   sendStatus: (campaignId: string) =>
@@ -600,6 +622,8 @@ export interface WhatsAppCloudConfigInput {
   appSecret?: string;
   verifyToken?: string;
   apiVersion?: string;
+  /** Meta app id; only needed for templates with an image, video or PDF header. */
+  appId?: string;
 }
 
 /** An approved (or pending) template on the WhatsApp Business Account. */
@@ -613,6 +637,11 @@ export interface WhatsAppCloudTemplate {
   /** Blank names in order: ['1','2'] or named ones like ['customer_name']. */
   bodyParamNames?: string[];
   parameterFormat?: 'POSITIONAL' | 'NAMED';
+  /** Sample file of a media header, on Meta's servers. */
+  headerExampleUrl?: string | null;
+  headerText?: string | null;
+  footer?: string | null;
+  buttons?: { type: string; text: string; url?: string; phone?: string }[];
   headerFormat: string | null;
 }
 
@@ -624,8 +653,33 @@ export interface NewWhatsAppCloudTemplate {
   body: string;
   examples?: string[];
   headerText?: string;
+  /** Image, video or PDF header, from a file uploaded with mediaAPI. */
+  headerMedia?: { format: 'IMAGE' | 'VIDEO' | 'DOCUMENT'; mediaId: string };
+  /** Sample for a {{1}} in the text header. */
+  headerTextExample?: string;
+  /** Map-pin header; the pin is the business location saved in Settings. */
+  headerLocation?: boolean;
   footer?: string;
   quickReplies?: string[];
+  buttons?: NewTemplateButton[];
+}
+
+/** One button on a new template. */
+export interface NewTemplateButton {
+  type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE';
+  text?: string;
+  url?: string;
+  /** URL ending in {{1}}: example ending. COPY_CODE: example code. */
+  example?: string;
+  phone?: string;
+}
+
+/** Pin shown by location-header templates. */
+export interface BusinessLocation {
+  latitude: number;
+  longitude: number;
+  name?: string;
+  address?: string;
 }
 
 export const whatsappCloudAPI = {
@@ -647,6 +701,8 @@ export const whatsappCloudAPI = {
   registerWebhook: () => api.post<WhatsAppCloudState>('/whatsapp/cloud/webhook'),
   /** One-time registration of the number with a 6-digit PIN. */
   registerNumber: (pin: string) => api.post<WhatsAppCloudState>('/whatsapp/cloud/register', { pin }),
+  getLocation: () => api.get<BusinessLocation | null>('/whatsapp/cloud/location'),
+  saveLocation: (data: BusinessLocation) => api.put<BusinessLocation>('/whatsapp/cloud/location', data),
   sendTest: (data: { to: string; template?: string; language?: string; text?: string }) =>
     api.post<{ messageId: string; to: string }>('/whatsapp/cloud/test', data),
 };

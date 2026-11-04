@@ -57,6 +57,7 @@ import TriggerConditionField from '../components/TriggerConditionField';
 import MetaTemplateFields from '../components/MetaTemplateFields';
 import CampaignFailuresCard from '../components/CampaignFailuresCard';
 import CampaignSendingCard from '../components/CampaignSendingCard';
+import MediaUpload from '../components/MediaUpload';
 import {
   campaignsAPI,
   templatesAPI,
@@ -86,6 +87,9 @@ interface CampaignData {
   send_window_timezone?: string;
   /** New people messaged for the first time per day; null uses the server default. */
   daily_new_contact_limit?: number | null;
+  /** Chosen gap between messages, in seconds; null means automatic. */
+  min_gap_seconds?: number | null;
+  max_gap_seconds?: number | null;
   /** null means "not set" — the campaign simply follows the global switch. */
   ai_auto_reply_enabled?: boolean | null;
 }
@@ -621,10 +625,15 @@ export default function CampaignDetail() {
   const handleCreateTemplate = async () => {
     if (!id) return;
     try {
-      const values = await templateForm.validateFields();
+      const { media, ...values } = await templateForm.validateFields();
       setSavingTemplate(true);
       await templatesAPI.create({
         ...values,
+        // The attached file decides the message type, so a picked "Image" without a
+        // file can no longer silently send as plain text.
+        ...(media?.url
+          ? { type: media.kind, media_url: media.url, media_filename: media.filename }
+          : { type: values.type === 'text' || !values.type ? values.type : 'text' }),
         campaign_id: id,
       });
       message.success('Template created');
@@ -1272,11 +1281,26 @@ export default function CampaignDetail() {
                 options={[
                   { label: 'Text', value: 'text' },
                   { label: 'Image', value: 'image' },
-                  { label: 'Document', value: 'document' },
+                  { label: 'Video', value: 'video' },
+                  { label: 'Document (PDF)', value: 'document' },
                 ]}
               />
             </Form.Item>
           </Flex>
+          <Form.Item noStyle shouldUpdate={(a, b) => a.type !== b.type}>
+            {({ getFieldValue }) =>
+              ['image', 'video', 'document'].includes(getFieldValue('type')) && (
+                <Form.Item
+                  name="media"
+                  label="File"
+                  rules={[{ required: true, message: 'Attach the file to send' }]}
+                  extra="Sent with the message. On the official API it is used as the template's header."
+                >
+                  <MediaUpload kind={getFieldValue('type')} label={`Attach ${getFieldValue('type') === 'document' ? 'PDF' : getFieldValue('type')}`} />
+                </Form.Item>
+              )
+            }
+          </Form.Item>
           <Form.Item
             name="trigger_condition"
             label="Trigger Condition"

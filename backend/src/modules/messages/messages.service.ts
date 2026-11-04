@@ -240,6 +240,7 @@ export class MessagesService {
     try {
       const result = await this.openwaService.sendTemplate(sessionId, chatId, template, language, params);
       saved.openwa_message_id = result?.messageId ?? null;
+      if (result?.renderedBody && !previewBody?.trim()) saved.body = result.renderedBody;
       saved.status = MessageStatus.SENT;
       saved.sent_at = new Date();
       await this.messageRepository.save(saved);

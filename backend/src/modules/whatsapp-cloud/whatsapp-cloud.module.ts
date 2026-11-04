@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { OpenwaModule } from '../openwa/openwa.module';
+import { MediaModule } from '../media/media.module';
 import { WhatsappCloudController } from './whatsapp-cloud.controller';
 import { WhatsappCloudService } from './whatsapp-cloud.service';
 import { WhatsappSenderService } from './whatsapp-sender.service';
@@ -12,7 +13,7 @@ import { WhatsappSenderService } from './whatsapp-sender.service';
  * receiver, so both feed the same inbound pipeline.
  */
 @Module({
-  imports: [OpenwaModule],
+  imports: [OpenwaModule, MediaModule],
   controllers: [WhatsappCloudController],
   providers: [WhatsappCloudService, WhatsappSenderService],
   exports: [WhatsappCloudService, WhatsappSenderService],

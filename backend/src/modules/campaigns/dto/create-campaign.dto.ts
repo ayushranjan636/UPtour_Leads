@@ -98,6 +98,26 @@ export class CreateCampaignDto {
   @Max(200)
   daily_new_contact_limit?: number;
 
+  @ApiPropertyOptional({
+    description:
+      'Shortest gap between two messages, in seconds. Set with max_gap_seconds to choose the ' +
+      'pace yourself; leave both empty (null) for automatic spacing across the sending hours.',
+    minimum: 5,
+    maximum: 86400,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(5)
+  @Max(86400)
+  min_gap_seconds?: number | null;
+
+  @ApiPropertyOptional({ description: 'Longest gap between two messages, in seconds.', minimum: 5, maximum: 86400 })
+  @IsOptional()
+  @IsInt()
+  @Min(5)
+  @Max(86400)
+  max_gap_seconds?: number | null;
+
   @ApiPropertyOptional({ description: 'Send window start time (HH:mm)', example: '09:00' })
   @IsOptional()
   @IsString()
@@ -161,6 +181,16 @@ export class CreateCampaignDto {
   // WhatsApp's own text limit; a longer body would be rejected at send time.
   @MaxLength(4096)
   first_message?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Image, video or PDF to send with the first message, as returned by POST /media. On the ' +
+      'official API it becomes the header of the new Meta template.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  first_message_media_url?: string;
 
   @ApiPropertyOptional({
     description:

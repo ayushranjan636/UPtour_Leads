@@ -12,6 +12,7 @@ import { ContactsService } from '../contacts/contacts.service';
 import { QueryContactDto } from '../contacts/dto/query-contact.dto';
 import { MessageTemplate } from '../../entities/message-template.entity';
 import { WhatsappCloudService } from '../whatsapp-cloud/whatsapp-cloud.service';
+import { MediaService } from '../media/media.service';
 import { isReplyTriggered, resolveTriggerCondition } from '../engine/trigger-conditions';
 import { metaTemplateName, toMetaTemplate } from '../whatsapp-cloud/meta-template.util';
 import { metaErrorCodeOf, metaErrorHint } from '../whatsapp-cloud/meta-errors';
@@ -99,15 +100,17 @@ export class CampaignsService extends BaseService<Campaign> {
     private readonly contactsService: ContactsService,
     // Optional so unit tests that build the service by hand keep working.
     @Optional() private readonly cloud?: WhatsappCloudService,
+    @Optional() private readonly media?: MediaService,
   ) { super(); }
 
   async createCampaign(dto: CreateCampaignDto, userId: string): Promise<Campaign> {
-    const { first_message, audience, meta_template, ...campaignFields } = dto;
+    const { first_message, audience, meta_template, first_message_media_url, ...campaignFields } = dto;
+    const media = await this.mediaFor(first_message_media_url);
 
     // Resolve the Meta template before anything is saved. When Meta rejects the text,
     // the operator gets Meta's reason and can fix the message, instead of ending up with
     // a half-made campaign that can never send.
-    const metaFields = await this.resolveMetaTemplate(meta_template, first_message, dto);
+    const metaFields = await this.resolveMetaTemplate(meta_template, first_message, dto, media);
 
     const campaign = await this.repo.save(
       this.repo.create({ ...campaignFields, created_by: userId, status: CampaignStatus.DRAFT }),
@@ -129,6 +132,7 @@ export class CampaignsService extends BaseService<Campaign> {
           body: first_message.trim(),
           sequence_order: 0,
           trigger_condition: 'initial',
+          ...(media ? { type: media.kind as any, media_url: media.url, media_filename: media.filename } : {}),
           ...metaFields,
         }),
       );
@@ -640,16 +644,29 @@ export class CampaignsService extends BaseService<Campaign> {
       { mode: 'create', category },
       step.body,
       { name: `${step.campaign?.name ?? 'campaign'} ${step.name}`, product: step.campaign?.product } as CreateCampaignDto,
+      await this.mediaFor(step.media_url),
     );
     Object.assign(step, fields);
     await this.templateRepo.save(step);
     return step;
   }
 
+  /** Details of a file uploaded to the portal, from its public URL. */
+  private async mediaFor(url: string | null | undefined) {
+    if (!url?.trim()) return null;
+    const id = MediaService.idFromUrl(url);
+    if (!id || !this.media) return null;
+    const file = await this.media.get(id);
+    const kind = MediaService.kindOf(file.mime);
+    if (!kind) return null;
+    return { id, url: url.trim(), filename: file.filename, kind };
+  }
+
   private async resolveMetaTemplate(
     choice: CreateCampaignDto['meta_template'],
     firstMessage: string | undefined,
     dto: CreateCampaignDto,
+    media?: { id: string | null; kind: string } | null,
   ): Promise<Partial<MessageTemplate>> {
     if (!choice) return {};
     if (!this.cloud) throw new BadRequestException('The WhatsApp Cloud API is not available.');
@@ -676,6 +693,10 @@ export class CampaignsService extends BaseService<Campaign> {
       category: choice.category ?? 'MARKETING',
       body: draft.body,
       examples: draft.examples,
+      // An attached file becomes the template's header, so the message carries it.
+      ...(media?.id
+        ? { headerMedia: { format: media.kind.toUpperCase() as 'IMAGE' | 'VIDEO' | 'DOCUMENT', mediaId: media.id } }
+        : {}),
     });
     this.logger.log(`Submitted Meta template ${created.name} for campaign ${dto.name} (${created.status})`);
     return {

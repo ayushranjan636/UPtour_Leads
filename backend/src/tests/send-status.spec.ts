@@ -149,3 +149,23 @@ describe('Pacing shown to the operator', () => {
     expect(s.state).toBe('sending');
   });
 });
+
+describe('Operator-chosen gap between messages', () => {
+  it('uses the chosen range instead of spreading across the day', () => {
+    const svc = makeDistributor(active, someWaiting) as any;
+    const custom = { ...active, min_gap_seconds: 20, max_gap_seconds: 40 };
+    for (let i = 0; i < 50; i++) {
+      const gap = svc.gapFor(custom, 5 * 60_000);
+      expect(gap).toBeGreaterThanOrEqual(20_000);
+      expect(gap).toBeLessThanOrEqual(40_000);
+    }
+    expect(svc.customGapMs({ ...active, min_gap_seconds: null })).toBeNull();
+  });
+
+  it('reports the chosen gap in the sending status', async () => {
+    const svc = makeDistributor({ ...active, min_gap_seconds: 30, max_gap_seconds: 90 }, someWaiting);
+    vi.spyOn(svc as any, 'isWithinSendWindow').mockReturnValue(true);
+    const s = await svc.getSendStatus('c1');
+    expect(s).toMatchObject({ gapSeconds: 60, gapIsCustom: true });
+  });
+});

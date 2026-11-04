@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Collapse, Flex, Form, Input, Select, Tag, Typography } from 'antd';
 import type { FormInstance } from 'antd';
 import { whatsappCloudAPI } from '../services/endpoints';
+import TemplatePreview from './TemplatePreview';
 import type { WhatsAppCloudTemplate } from '../services/endpoints';
 import { color, font, space } from '../theme/tokens';
 
@@ -136,19 +137,7 @@ export default function MetaTemplateFields({
                 </Form.Item>
               </Flex>
 
-              {selected?.body && (
-                <div
-                  style={{
-                    whiteSpace: 'pre-wrap',
-                    fontSize: font.size.footnote,
-                    background: color.fill,
-                    padding: space.sm,
-                    borderRadius: 8,
-                  }}
-                >
-                  {selected.body}
-                </div>
-              )}
+              {selected && <TemplatePreview template={selected} />}
 
               <Form.Item
                 name="cloud_template_params"

@@ -60,6 +60,16 @@ export class Campaign {
   @Column({ type: 'int', nullable: true })
   daily_new_contact_limit: number | null;
 
+  /**
+   * Operator-chosen gap between messages, in seconds: each gap is picked at random
+   * between these two. Null means automatic, spreading the daily limit over the hours.
+   */
+  @Column({ type: 'int', nullable: true })
+  min_gap_seconds: number | null;
+
+  @Column({ type: 'int', nullable: true })
+  max_gap_seconds: number | null;
+
   @Column({ type: 'time', default: '09:00' })
   send_window_start: string;
 

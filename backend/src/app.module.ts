@@ -27,6 +27,7 @@ import { LeadsModule } from './modules/leads/leads.module';
 import { DealsModule } from './modules/deals/deals.module';
 import { ImportsModule } from './modules/imports/imports.module';
 import { OpenwaModule } from './modules/openwa/openwa.module';
+import { MediaModule } from './modules/media/media.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { AiModule } from './modules/ai/ai.module';
 import { EngineModule } from './modules/engine/engine.module';
@@ -107,6 +108,7 @@ import { HealthController } from './health.controller';
     DealsModule,
     ImportsModule,
     OpenwaModule,
+    MediaModule,
     WebhooksModule,
     AiModule,
     EngineModule,

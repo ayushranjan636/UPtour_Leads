@@ -46,6 +46,7 @@ import DatasetFilter, {
 } from '../components/DatasetFilter';
 import { campaignsAPI, contactsAPI, whatsappCloudAPI } from '../services/endpoints';
 import CampaignStatusLine from '../components/CampaignStatusLine';
+import MediaUpload from '../components/MediaUpload';
 import CampaignMetaTemplateSection, {
   buildMetaTemplatePayload,
 } from '../components/CampaignMetaTemplateSection';
@@ -248,6 +249,9 @@ export default function Campaigns() {
         typeof values.first_message === 'string' ? values.first_message.trim() : '';
       if (firstMessage) {
         payload.first_message = firstMessage;
+      }
+      if (values.first_message_media?.url) {
+        payload.first_message_media_url = values.first_message_media.url;
       }
       // Omitted entirely when nothing is selected — an empty object would still be a
       // filter, and "no audience" must mean "create the campaign empty".
@@ -671,6 +675,14 @@ function CampaignModal({
             messages are identical — this reduces the chance WhatsApp flags the account.
           </Text>
         </div>
+        <Form.Item
+          name="first_message_media"
+          label="Image, video or PDF (optional)"
+          extra="Sent with the first message. On the official API it becomes the template's header image."
+        >
+          <MediaUpload />
+        </Form.Item>
+
         {!hasFirstMessage && (
           <Alert
             type="warning"

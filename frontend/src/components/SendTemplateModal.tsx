@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Flex, Input, Modal, Select, Spin, Typography, message } from 'antd';
+import { Alert, Flex, Input, Modal, Select, Spin, message } from 'antd';
 import { messagesAPI, whatsappCloudAPI } from '../services/endpoints';
+import TemplatePreview from './TemplatePreview';
 import type { WhatsAppCloudTemplate } from '../services/endpoints';
-import { color, font, radius, space } from '../theme/tokens';
+import { space } from '../theme/tokens';
 
-const { Text } = Typography;
 
 interface Props {
   open: boolean;
@@ -138,11 +138,7 @@ export default function SendTemplateModal({ open, contact, onClose, onSent }: Pr
               onChange={(e) => setParams((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))}
             />
           ))}
-          {preview && (
-            <div style={{ background: color.fill, borderRadius: radius.md, padding: space.md }}>
-              <Text style={{ whiteSpace: 'pre-wrap', fontSize: font.size.footnote }}>{preview}</Text>
-            </div>
-          )}
+          {selected && <TemplatePreview template={selected} values={params} />}
         </Flex>
       )}
     </Modal>
