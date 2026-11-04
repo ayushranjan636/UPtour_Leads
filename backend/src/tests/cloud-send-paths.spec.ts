@@ -655,3 +655,75 @@ describe('Templates with an image header (made in WhatsApp Manager)', () => {
     ]);
   });
 });
+
+describe('Every template type Meta supports', () => {
+  it('builds every button type in Meta’s shape, quick replies grouped first', () => {
+    const buttons = WhatsappCloudService.buildButtons({
+      buttons: [
+        { type: 'URL', text: 'Visit website', url: 'https://upheritagetours.com/' },
+        { type: 'QUICK_REPLY', text: 'Yes, send details' },
+        { type: 'URL', text: 'See itinerary', url: 'https://upheritagetours.com/t/{{1}}', example: 'kumbh-2027' },
+        { type: 'PHONE_NUMBER', text: 'Call us', phone: '+91 98765 43210' },
+        { type: 'COPY_CODE', example: 'KUMBH10' },
+      ],
+    });
+    expect(buttons).toEqual([
+      { type: 'QUICK_REPLY', text: 'Yes, send details' },
+      { type: 'URL', text: 'Visit website', url: 'https://upheritagetours.com/' },
+      {
+        type: 'URL',
+        text: 'See itinerary',
+        url: 'https://upheritagetours.com/t/{{1}}',
+        example: ['https://upheritagetours.com/t/kumbh-2027'],
+      },
+      { type: 'PHONE_NUMBER', text: 'Call us', phone_number: '+919876543210' },
+      { type: 'COPY_CODE', example: 'KUMBH10' },
+    ]);
+  });
+
+  it('explains Meta’s button limits before submitting', () => {
+    const three = Array.from({ length: 3 }, () => ({ type: 'URL' as const, text: 'Go', url: 'https://x.com' }));
+    expect(() => WhatsappCloudService.buildButtons({ buttons: three })).toThrow(/at most 2 website buttons/);
+    expect(() =>
+      WhatsappCloudService.buildButtons({ buttons: [{ type: 'URL', text: 'Go', url: 'https://x.com/{{1}}/a' }] }),
+    ).toThrow(/only be at the very end/);
+  });
+
+  it('fills a text-header blank, a copy-code button and a location header when sending', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        data: [
+          {
+            name: 'offer',
+            language: 'en',
+            status: 'APPROVED',
+            category: 'MARKETING',
+            components: [
+              { type: 'HEADER', format: 'TEXT', text: 'Kumbh {{1}}', example: { header_text: ['2027'] } },
+              { type: 'BODY', text: 'Book now.' },
+              { type: 'BUTTONS', buttons: [{ type: 'COPY_CODE', example: ['KUMBH10'] }] },
+            ],
+          },
+          {
+            name: 'visit_us',
+            language: 'en',
+            status: 'APPROVED',
+            category: 'MARKETING',
+            components: [{ type: 'HEADER', format: 'LOCATION' }, { type: 'BODY', text: 'Visit our office.' }],
+          },
+        ],
+      },
+    } as any);
+    const { sender } = makeCloud();
+    await sender.sendTemplate('cloud:1', '919876543210@c.us', 'offer', 'en', []);
+    expect((post.mock.calls[0][1] as any).template.components).toEqual([
+      { type: 'header', parameters: [{ type: 'text', text: '2027' }] },
+      { type: 'button', sub_type: 'copy_code', index: '0', parameters: [{ type: 'coupon_code', coupon_code: 'KUMBH10' }] },
+    ]);
+
+    // A location header needs the business location; without one the reason is explicit.
+    await expect(sender.sendTemplate('cloud:1', '919876543210@c.us', 'visit_us', 'en', [])).rejects.toThrow(
+      /Set your business location/,
+    );
+  });
+});

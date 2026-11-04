@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Flex, Form, Radio, Select, Tag, Typography } from 'antd';
 import type { FormInstance } from 'antd';
 import { whatsappCloudAPI } from '../services/endpoints';
+import TemplatePreview from './TemplatePreview';
 import type { WhatsAppCloudTemplate } from '../services/endpoints';
 import { toMetaTemplate } from '../utils/metaTemplate';
 import { color, font, radius, space } from '../theme/tokens';
@@ -165,11 +166,7 @@ export default function CampaignMetaTemplateSection({ form }: { form: FormInstan
                 }))}
               />
             </Form.Item>
-            {chosen?.body && (
-              <div style={{ background: color.fill, borderRadius: radius.md, padding: space.sm }}>
-                <Text style={{ whiteSpace: 'pre-wrap', fontSize: font.size.footnote }}>{chosen.body}</Text>
-              </div>
-            )}
+            {chosen && <TemplatePreview template={chosen} />}
             {chosen && chosen.bodyParamCount > 0 && (
               <Form.Item
                 name="meta_params"

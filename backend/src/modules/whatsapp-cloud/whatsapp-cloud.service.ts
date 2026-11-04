@@ -94,11 +94,38 @@ export interface NewCloudTemplate {
   /** One sample value per placeholder, which Meta's reviewers read. */
   examples?: string[];
   headerText?: string;
+  /** Sample for a {{1}} in the text header, which Meta's reviewers read. */
+  headerTextExample?: string;
+  /** Location header: each message shows a map pin, set per send. */
+  headerLocation?: boolean;
+  /** Buttons of any type Meta allows. Supersedes quickReplies. */
+  buttons?: NewTemplateButton[];
   /** Image, video or PDF header, from a file uploaded to the portal. */
   headerMedia?: { format: 'IMAGE' | 'VIDEO' | 'DOCUMENT'; mediaId: string };
   footer?: string;
   /** Quick-reply button labels, at most three. */
   quickReplies?: string[];
+}
+
+/** One template button. Meta allows up to 10: quick replies, 2 URL, 1 phone, 1 copy code. */
+export interface NewTemplateButton {
+  type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE';
+  /** Label on the button (not used by COPY_CODE, whose label Meta sets). Max 25 characters. */
+  text?: string;
+  /** URL buttons. May end in {{1}} for a per-message suffix. */
+  url?: string;
+  /** For a URL ending in {{1}}: an example suffix. For COPY_CODE: an example code. */
+  example?: string;
+  /** PHONE_NUMBER buttons, with country code, e.g. +919876543210. */
+  phone?: string;
+}
+
+/** A button as the portal shows it on a template. */
+export interface CloudTemplateButton {
+  type: string;
+  text: string;
+  url?: string;
+  phone?: string;
 }
 
 export interface CloudTemplate {
@@ -125,6 +152,13 @@ export interface CloudTemplate {
   headerText?: string | null;
   /** URL buttons whose link ends in a {{1}} blank, which each send must fill. */
   dynamicUrlButtons?: { index: number; example: string | null }[];
+  /** Example for a {{1}} in the text header; each send must fill it. */
+  headerTextExample?: string | null;
+  /** Copy-code buttons, which each send must give a code. */
+  copyCodeButtons?: { index: number; example: string | null }[];
+  /** All buttons, for display. */
+  buttons?: CloudTemplateButton[];
+  footer?: string | null;
 }
 
 /** Blanks in a template body, in order of first appearance, without braces. */
@@ -564,6 +598,18 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
               t.parameter_format === 'NAMED' || names.some((n) => !/^\d+$/.test(n)) ? 'NAMED' : 'POSITIONAL',
             headerExampleUrl: header?.example?.header_handle?.[0] ?? header?.example?.header_url?.[0] ?? null,
             headerText: header?.format === 'TEXT' ? (header?.text ?? null) : null,
+            headerTextExample: header?.example?.header_text?.[0] ?? null,
+            footer: (t.components ?? []).find((c: any) => c.type === 'FOOTER')?.text ?? null,
+            buttons: ((t.components ?? []).find((c: any) => c.type === 'BUTTONS')?.buttons ?? []).map((b: any) => ({
+              type: b.type,
+              text: b.text ?? (b.type === 'COPY_CODE' ? 'Copy offer code' : ''),
+              url: b.url,
+              phone: b.phone_number,
+            })),
+            copyCodeButtons: ((t.components ?? []).find((c: any) => c.type === 'BUTTONS')?.buttons ?? [])
+              .map((b: any, index: number) => ({ b, index }))
+              .filter(({ b }: any) => b?.type === 'COPY_CODE')
+              .map(({ b, index }: any) => ({ index, example: (Array.isArray(b.example) ? b.example[0] : b.example) ?? null })),
             dynamicUrlButtons: ((t.components ?? []).find((c: any) => c.type === 'BUTTONS')?.buttons ?? [])
               .map((b: any, index: number) => ({ b, index }))
               .filter(({ b }: any) => b?.type === 'URL' && /\{\{\s*\w+\s*\}\}/.test(b?.url ?? ''))
@@ -623,8 +669,20 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
     if (input.headerMedia?.mediaId) {
       const handle = await this.uploadSampleForTemplate(cfg, input.headerMedia.mediaId);
       components.push({ type: 'HEADER', format: input.headerMedia.format, example: { header_handle: [handle] } });
+    } else if (input.headerLocation) {
+      components.push({ type: 'HEADER', format: 'LOCATION' });
     } else if (input.headerText?.trim()) {
-      components.push({ type: 'HEADER', format: 'TEXT', text: input.headerText.trim() });
+      const text = input.headerText.trim();
+      const hasBlank = /\{\{\s*1\s*\}\}/.test(text);
+      if (hasBlank && !input.headerTextExample?.trim()) {
+        throw new BadRequestException('Give a sample value for the {{1}} in the header.');
+      }
+      components.push({
+        type: 'HEADER',
+        format: 'TEXT',
+        text,
+        ...(hasBlank ? { example: { header_text: [input.headerTextExample!.trim()] } } : {}),
+      });
     }
     components.push({
       type: 'BODY',
@@ -632,10 +690,8 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
       ...(used.length ? { example: { body_text: [examples.slice(0, used.length)] } } : {}),
     });
     if (input.footer?.trim()) components.push({ type: 'FOOTER', text: input.footer.trim() });
-    const replies = (input.quickReplies ?? []).map((r) => r?.trim()).filter(Boolean).slice(0, 3);
-    if (replies.length) {
-      components.push({ type: 'BUTTONS', buttons: replies.map((text) => ({ type: 'QUICK_REPLY', text })) });
-    }
+    const buttons = WhatsappCloudService.buildButtons(input);
+    if (buttons.length) components.push({ type: 'BUTTONS', buttons });
 
     try {
       const { data } = await axios.post(
@@ -648,6 +704,63 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
     } catch (err) {
       throw new BadRequestException(`Meta rejected the template: ${this.describeError(err)}`);
     }
+  }
+
+  /**
+   * Template buttons in Meta's shape, checked against Meta's limits first so the
+   * operator gets the reason in plain words instead of a rejection code.
+   */
+  static buildButtons(input: { buttons?: NewTemplateButton[]; quickReplies?: string[] }): any[] {
+    const list: NewTemplateButton[] = [
+      ...(input.buttons ?? []),
+      ...(input.quickReplies ?? []).filter((r) => r?.trim()).map((text) => ({ type: 'QUICK_REPLY' as const, text })),
+    ];
+    if (list.length > 10) throw new BadRequestException('Meta allows at most 10 buttons on a template.');
+    const count = (t: string) => list.filter((b) => b.type === t).length;
+    if (count('URL') > 2) throw new BadRequestException('Meta allows at most 2 website buttons.');
+    if (count('PHONE_NUMBER') > 1) throw new BadRequestException('Meta allows 1 call button.');
+    if (count('COPY_CODE') > 1) throw new BadRequestException('Meta allows 1 copy-code button.');
+
+    // Meta requires quick replies to be grouped together, before or after the others.
+    const ordered = [...list.filter((b) => b.type === 'QUICK_REPLY'), ...list.filter((b) => b.type !== 'QUICK_REPLY')];
+    return ordered.map((b) => {
+      const text = b.text?.trim() ?? '';
+      if (b.type !== 'COPY_CODE' && !text) throw new BadRequestException('Every button needs a label.');
+      if (text.length > 25) throw new BadRequestException(`Button label "${text}" is longer than 25 characters.`);
+      switch (b.type) {
+        case 'QUICK_REPLY':
+          return { type: 'QUICK_REPLY', text };
+        case 'URL': {
+          const url = b.url?.trim() ?? '';
+          if (!/^https?:\/\//.test(url)) throw new BadRequestException(`Website button "${text}" needs a full link starting with https://`);
+          const blank = /\{\{\s*1\s*\}\}/.test(url);
+          if (blank && !/\{\{\s*1\s*\}\}$/.test(url)) {
+            throw new BadRequestException('In a website link, {{1}} can only be at the very end.');
+          }
+          if (blank && !b.example?.trim()) {
+            throw new BadRequestException(`Give an example ending for the {{1}} in "${text}".`);
+          }
+          return {
+            type: 'URL',
+            text,
+            url,
+            ...(blank ? { example: [url.replace(/\{\{\s*1\s*\}\}$/, b.example!.trim())] } : {}),
+          };
+        }
+        case 'PHONE_NUMBER': {
+          const phone = (b.phone ?? '').replace(/[^\d+]/g, '');
+          if (!/^\+?\d{8,15}$/.test(phone)) throw new BadRequestException(`Call button "${text}" needs a phone number with country code.`);
+          return { type: 'PHONE_NUMBER', text, phone_number: phone.startsWith('+') ? phone : `+${phone}` };
+        }
+        case 'COPY_CODE': {
+          const code = b.example?.trim();
+          if (!code || code.length > 15) throw new BadRequestException('A copy-code button needs an example code of up to 15 characters.');
+          return { type: 'COPY_CODE', example: code };
+        }
+        default:
+          throw new BadRequestException(`Unknown button type ${(b as any).type}`);
+      }
+    });
   }
 
   /** The Meta app the token belongs to, from the saved App ID or the token itself. */
@@ -879,6 +992,22 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
     // failing the whole send.
     const parameters = WhatsappCloudService.shapeBodyParams(bodyParams, def);
     if (parameters.length) components.push({ type: 'body', parameters });
+    if (def?.headerFormat === 'TEXT' && def.headerText && /\{\{\s*\w+\s*\}\}/.test(def.headerText)) {
+      // The header blank takes the template's sample, e.g. a destination or offer name.
+      components.unshift({ type: 'header', parameters: [{ type: 'text', text: def.headerTextExample || bodyParams[0] || '-' }] });
+    }
+    if (def?.headerFormat === 'LOCATION') {
+      const loc = await this.businessLocation();
+      components.unshift({ type: 'header', parameters: [{ type: 'location', location: loc }] });
+    }
+    for (const btn of def?.copyCodeButtons ?? []) {
+      components.push({
+        type: 'button',
+        sub_type: 'copy_code',
+        index: String(btn.index),
+        parameters: [{ type: 'coupon_code', coupon_code: btn.example || 'OFFER' }],
+      });
+    }
     for (const btn of def?.dynamicUrlButtons ?? []) {
       components.push({
         type: 'button',
@@ -908,6 +1037,34 @@ export class WhatsappCloudService implements OnModuleInit, OnApplicationBootstra
       return (i >= 0 && values[i]?.trim()) || '-';
     });
     return [def.headerText, body].filter(Boolean).join('\n\n');
+  }
+
+  /** The pin shown by templates with a location header. Saved from Settings. */
+  async businessLocation(): Promise<{ latitude: number; longitude: number; name?: string; address?: string }> {
+    const loc = await this.readSetting<{ latitude: number; longitude: number; name?: string; address?: string }>(
+      'whatsapp.location',
+    );
+    if (!loc || !Number.isFinite(Number(loc.latitude)) || !Number.isFinite(Number(loc.longitude))) {
+      throw new BadRequestException(
+        'This template shows a location. Set your business location under Settings → WhatsApp → Business location first.',
+      );
+    }
+    return { ...loc, latitude: Number(loc.latitude), longitude: Number(loc.longitude) };
+  }
+
+  async getBusinessLocation() {
+    return this.readSetting<{ latitude: number; longitude: number; name?: string; address?: string }>('whatsapp.location');
+  }
+
+  async saveBusinessLocation(loc: { latitude: number; longitude: number; name?: string; address?: string }) {
+    const lat = Number(loc.latitude);
+    const lng = Number(loc.longitude);
+    if (!(lat >= -90 && lat <= 90) || !(lng >= -180 && lng <= 180)) {
+      throw new BadRequestException('Latitude must be -90 to 90 and longitude -180 to 180.');
+    }
+    const value = { latitude: lat, longitude: lng, name: loc.name?.trim() || undefined, address: loc.address?.trim() || undefined };
+    await this.writeSetting('whatsapp.location', value);
+    return value;
   }
 
   /** Uploaded copies of template header samples: Meta media ids last 30 days, kept 25. */

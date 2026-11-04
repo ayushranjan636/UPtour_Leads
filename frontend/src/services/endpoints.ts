@@ -637,6 +637,11 @@ export interface WhatsAppCloudTemplate {
   /** Blank names in order: ['1','2'] or named ones like ['customer_name']. */
   bodyParamNames?: string[];
   parameterFormat?: 'POSITIONAL' | 'NAMED';
+  /** Sample file of a media header, on Meta's servers. */
+  headerExampleUrl?: string | null;
+  headerText?: string | null;
+  footer?: string | null;
+  buttons?: { type: string; text: string; url?: string; phone?: string }[];
   headerFormat: string | null;
 }
 
@@ -650,8 +655,31 @@ export interface NewWhatsAppCloudTemplate {
   headerText?: string;
   /** Image, video or PDF header, from a file uploaded with mediaAPI. */
   headerMedia?: { format: 'IMAGE' | 'VIDEO' | 'DOCUMENT'; mediaId: string };
+  /** Sample for a {{1}} in the text header. */
+  headerTextExample?: string;
+  /** Map-pin header; the pin is the business location saved in Settings. */
+  headerLocation?: boolean;
   footer?: string;
   quickReplies?: string[];
+  buttons?: NewTemplateButton[];
+}
+
+/** One button on a new template. */
+export interface NewTemplateButton {
+  type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE';
+  text?: string;
+  url?: string;
+  /** URL ending in {{1}}: example ending. COPY_CODE: example code. */
+  example?: string;
+  phone?: string;
+}
+
+/** Pin shown by location-header templates. */
+export interface BusinessLocation {
+  latitude: number;
+  longitude: number;
+  name?: string;
+  address?: string;
 }
 
 export const whatsappCloudAPI = {
@@ -673,6 +701,8 @@ export const whatsappCloudAPI = {
   registerWebhook: () => api.post<WhatsAppCloudState>('/whatsapp/cloud/webhook'),
   /** One-time registration of the number with a 6-digit PIN. */
   registerNumber: (pin: string) => api.post<WhatsAppCloudState>('/whatsapp/cloud/register', { pin }),
+  getLocation: () => api.get<BusinessLocation | null>('/whatsapp/cloud/location'),
+  saveLocation: (data: BusinessLocation) => api.put<BusinessLocation>('/whatsapp/cloud/location', data),
   sendTest: (data: { to: string; template?: string; language?: string; text?: string }) =>
     api.post<{ messageId: string; to: string }>('/whatsapp/cloud/test', data),
 };

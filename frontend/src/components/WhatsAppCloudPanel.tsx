@@ -25,6 +25,7 @@ import {
 import { whatsappCloudAPI } from '../services/endpoints';
 import WhatsAppCloudTestCard from './WhatsAppCloudTestCard';
 import WhatsAppCloudTemplatesCard from './WhatsAppCloudTemplatesCard';
+import BusinessLocationCard from './BusinessLocationCard';
 import type {
   WhatsAppCloudConfigInput,
   WhatsAppProvider,
@@ -457,6 +458,8 @@ export default function WhatsAppCloudPanel({ onProviderChanged }: { onProviderCh
       {cloud.connected && <WhatsAppCloudTestCard />}
 
       {cloud.connected && <WhatsAppCloudTemplatesCard />}
+
+      {cloud.connected && <BusinessLocationCard />}
 
       {/* ── Webhook setup ─────────────────────────────────── */}
       <Card size="small" style={{ borderRadius: radius.lg }}>
