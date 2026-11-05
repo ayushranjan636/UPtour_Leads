@@ -15,7 +15,12 @@ import { WhatsappCloudService } from '../whatsapp-cloud/whatsapp-cloud.service';
 import { MediaService } from '../media/media.service';
 import { isReplyTriggered, resolveTriggerCondition } from '../engine/trigger-conditions';
 import { metaTemplateName, toMetaTemplate } from '../whatsapp-cloud/meta-template.util';
-import { metaErrorCodeOf, metaErrorHint } from '../whatsapp-cloud/meta-errors';
+import {
+  metaErrorCodeOf,
+  metaErrorHint,
+  PERMANENT_RECIPIENT_ERROR_CODES,
+  reasonCodePattern,
+} from '../whatsapp-cloud/meta-errors';
 
 /** Shape returned by getSendPreview — the facts behind the "send" decision. */
 export interface SendPreview {
@@ -235,18 +240,29 @@ export class CampaignsService extends BaseService<Campaign> {
    * the failure. A campaign that "completed" only because every send failed is reopened:
    * completion is normally final, but here it recorded nothing but failures.
    */
-  async retryFailed(id: string): Promise<{ requeued: number; status: CampaignStatus }> {
+  async retryFailed(id: string): Promise<{ requeued: number; skipped: number; status: CampaignStatus }> {
     const campaign = await this.findById(id);
     const templates = await this.templateRepo.find({ where: { campaign_id: id } });
     const blockers = await this.cloudTemplateBlockers(templates);
     if (blockers.length) throw new BadRequestException(blockers.join(' '));
 
-    const result = await this.ccRepo.update(
-      { campaign_id: id, status: 'failed' as any },
-      { status: 'pending' as any },
+    // Numbers not on WhatsApp, and people who opted out, would only fail again.
+    const rows: { id: string; permanent: boolean }[] = await this.ccRepo.query(
+      `SELECT cc.id, COALESCE(m.failed_reason, '') ~ $2 AS permanent
+         FROM campaign_contacts cc
+         LEFT JOIN LATERAL (
+           SELECT failed_reason FROM messages
+            WHERE campaign_contact_id = cc.id AND status = 'failed'
+            ORDER BY created_at DESC LIMIT 1
+         ) m ON true
+        WHERE cc.campaign_id = $1 AND cc.status = 'failed'`,
+      [id, reasonCodePattern(PERMANENT_RECIPIENT_ERROR_CODES)],
     );
-    const requeued = result.affected ?? 0;
-    if (requeued === 0) return { requeued, status: campaign.status };
+    const ids = rows.filter((r) => !r.permanent).map((r) => r.id);
+    const skipped = rows.length - ids.length;
+    if (ids.length) await this.ccRepo.update({ id: In(ids) }, { status: 'pending' as any });
+    const requeued = ids.length;
+    if (requeued === 0) return { requeued, skipped, status: campaign.status };
 
     let status = campaign.status;
     if (status === CampaignStatus.COMPLETED) {
@@ -254,7 +270,7 @@ export class CampaignsService extends BaseService<Campaign> {
       status = CampaignStatus.ACTIVE;
     }
     this.logger.log(`Campaign ${campaign.name}: ${requeued} failed contacts queued again (${status})`);
-    return { requeued, status };
+    return { requeued, skipped, status };
   }
 
   /**

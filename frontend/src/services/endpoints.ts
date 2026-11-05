@@ -179,7 +179,7 @@ export const campaignsAPI = {
     api.post(`/campaigns/steps/${templateId}/meta-template`, { category: 'MARKETING' }),
   /** Queue failed contacts again after fixing the cause. */
   retryFailed: (id: string) =>
-    api.post<{ requeued: number; status: string }>(`/campaigns/${id}/retry-failed`),
+    api.post<{ requeued: number; skipped?: number; status: string }>(`/campaigns/${id}/retry-failed`),
 };
 
 /* ── Templates ────────────────────────────────────── */
