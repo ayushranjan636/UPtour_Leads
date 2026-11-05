@@ -510,11 +510,40 @@ describe('Failed campaign messages: why, and retry', () => {
   });
 
   it('reopens a campaign that "completed" only because every send failed', async () => {
-    const ccUpdate = vi.fn(async () => ({ affected: 5 }));
-    const { svc, repo } = await campaignsWith(vi.fn(), ccUpdate, { id: 'c1', name: 'X', status: 'completed' });
-    await expect(svc.retryFailed('c1')).resolves.toEqual({ requeued: 5, status: 'active' });
-    expect(ccUpdate).toHaveBeenCalledWith({ campaign_id: 'c1', status: 'failed' }, { status: 'pending' });
+    const ccUpdate = vi.fn(async () => ({ affected: 2 }));
+    const query = vi.fn(async () => [
+      { id: 'a', permanent: false },
+      { id: 'b', permanent: false },
+    ]);
+    const { svc, repo } = await campaignsWith(query, ccUpdate, { id: 'c1', name: 'X', status: 'completed' });
+    await expect(svc.retryFailed('c1')).resolves.toEqual({ requeued: 2, skipped: 0, status: 'active' });
+    expect(ccUpdate).toHaveBeenCalledWith({ id: expect.anything() }, { status: 'pending' });
     expect(repo.update).toHaveBeenCalledWith('c1', { status: 'active' });
+  });
+
+  it('does not retry numbers that are not on WhatsApp or opted out', async () => {
+    const ccUpdate = vi.fn(async () => ({ affected: 1 }));
+    const query = vi.fn(async () => [
+      { id: 'a', permanent: true },
+      { id: 'b', permanent: false },
+    ]);
+    const { svc } = await campaignsWith(query, ccUpdate, { id: 'c1', name: 'X', status: 'paused' });
+    await expect(svc.retryFailed('c1')).resolves.toEqual({ requeued: 1, skipped: 1, status: 'paused' });
+    expect(query.mock.calls[0][1][1]).toBe('\\(#(131026|131050)\\)');
+  });
+
+  it('does not pause a campaign for failures that belong to single recipients', async () => {
+    const { SendDistributorService } = await import('../modules/engine/send-distributor.service');
+    const svc = Object.create(SendDistributorService.prototype) as any;
+    svc.logger = { error: vi.fn() };
+    svc.campaignRepo = { update: vi.fn() };
+    // The SQL leaves out recipient-level failures; what remains decides.
+    svc.ccRepo = { query: vi.fn(async () => [{ status: 'failed' }, { status: 'sent' }]) };
+    await expect(svc.tripBreakerIfFailing({ id: 'c1', name: 'X' })).resolves.toBe(false);
+    expect(svc.ccRepo.query.mock.calls[0][1][1]).toContain('131026|131049');
+    svc.ccRepo.query = vi.fn(async () => Array(5).fill({ status: 'failed' }));
+    await expect(svc.tripBreakerIfFailing({ id: 'c1', name: 'X' })).resolves.toBe(true);
+    expect(svc.campaignRepo.update).toHaveBeenCalledWith('c1', { status: 'paused' });
   });
 });
 

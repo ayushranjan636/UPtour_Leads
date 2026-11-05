@@ -28,7 +28,7 @@ const HINTS: Record<number, string> = {
   131045: 'The phone number is not registered or its certificate is invalid. Register the number in Settings → WhatsApp.',
   131047: 'More than 24 hours since this person last wrote, so only an approved template can be sent. Set a Meta template on this step.',
   131048: 'Meta’s spam limit was hit: too many recent messages were blocked or reported. Slow down and make the message more relevant.',
-  131049: 'Meta held back this marketing message to protect engagement with this person. It may go through later; do not resend immediately.',
+  131049: 'Meta held back this marketing message. Meta does not deliver marketing templates to US (+1) numbers at all, and also limits how many marketing messages one person receives. For US contacts, wait for them to message you first, then reply. Other numbers may go through later; do not resend immediately.',
   131050: 'This person has stopped receiving marketing messages from you.',
   131051: 'This message type is not supported.',
   131052: 'Meta could not download the media this person sent.',
@@ -51,6 +51,22 @@ export function metaErrorHint(code: number | string | null | undefined): string 
   const n = typeof code === 'string' ? Number(code) : code;
   if (n === null || n === undefined || Number.isNaN(n)) return null;
   return HINTS[n] ?? null;
+}
+
+/**
+ * Failures that belong to one recipient, not to the account.
+ *
+ * A number that is not on WhatsApp, or a person Meta will not send marketing to, says
+ * nothing about whether the next contact will succeed. These must not pause a campaign.
+ */
+export const RECIPIENT_ERROR_CODES = [131021, 131026, 131049, 131050, 131056];
+
+/** Failures a retry cannot fix: the number is not on WhatsApp, or the person opted out. */
+export const PERMANENT_RECIPIENT_ERROR_CODES = [131026, 131050];
+
+/** Postgres regex matching a stored reason that carries one of these codes. */
+export function reasonCodePattern(codes: number[]): string {
+  return `\\(#(${codes.join('|')})\\)`;
 }
 
 /** Pull the `(#123)` code back out of a stored failure reason. */

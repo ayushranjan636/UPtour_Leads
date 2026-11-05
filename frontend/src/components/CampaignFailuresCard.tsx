@@ -49,10 +49,14 @@ export default function CampaignFailuresCard({
     setRetrying(true);
     try {
       const { data } = await campaignsAPI.retryFailed(campaignId);
+      const skippedNote = data.skipped
+        ? ` ${data.skipped} not retried: not on WhatsApp or opted out.`
+        : '';
       message.success(
-        data.requeued
-          ? `${data.requeued} contacts queued again${data.status === 'active' ? '; sending resumes shortly' : '. Activate the campaign to send'}`
-          : 'Nothing to retry',
+        (data.requeued
+          ? `${data.requeued} contacts queued again${data.status === 'active' ? '; sending resumes shortly.' : '. Press Activate to send.'}`
+          : 'Nothing to retry.') + skippedNote,
+        8,
       );
       await load();
       onRetried();

@@ -12,6 +12,7 @@ import {
 } from '../../entities/campaign-contact.entity';
 import { Contact } from '../../entities/contact.entity';
 import { WhatsappSenderService } from '../whatsapp-cloud/whatsapp-sender.service';
+import { RECIPIENT_ERROR_CODES, reasonCodePattern } from '../whatsapp-cloud/meta-errors';
 import { RedisService } from '../../common/redis/redis.service';
 import {
   dayKeyIn,
@@ -240,14 +241,23 @@ export class SendDistributorService {
    * ongoing abuse signal. Returns true when the campaign was paused.
    */
   private async tripBreakerIfFailing(campaign: Campaign): Promise<boolean> {
-    const recent = await this.ccRepo
-      .createQueryBuilder('cc')
-      .select('cc.status', 'status')
-      .where('cc.campaign_id = :id', { id: campaign.id })
-      .andWhere('cc.last_sent_at IS NOT NULL')
-      .orderBy('cc.last_sent_at', 'DESC')
-      .limit(FAILURE_PAUSE_THRESHOLD)
-      .getRawMany<{ status: string }>();
+    // Failures that belong to one recipient (not on WhatsApp, Meta holding back
+    // marketing to that person) say nothing about the account, so they are skipped.
+    const recent: { status: string }[] = await this.ccRepo.query(
+      `SELECT cc.status
+         FROM campaign_contacts cc
+         LEFT JOIN LATERAL (
+           SELECT failed_reason FROM messages
+            WHERE campaign_contact_id = cc.id AND status = 'failed'
+            ORDER BY created_at DESC LIMIT 1
+         ) m ON true
+        WHERE cc.campaign_id = $1
+          AND cc.last_sent_at IS NOT NULL
+          AND NOT (cc.status = 'failed' AND COALESCE(m.failed_reason, '') ~ $2)
+        ORDER BY cc.last_sent_at DESC
+        LIMIT ${FAILURE_PAUSE_THRESHOLD}`,
+      [campaign.id, reasonCodePattern(RECIPIENT_ERROR_CODES)],
+    );
 
     if (recent.length < FAILURE_PAUSE_THRESHOLD) return false;
     if (!recent.every((r) => r.status === 'failed')) return false;
